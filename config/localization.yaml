@@ -1,0 +1,10 @@
+# Pixel-only locator. These values do NOT authorize or define robot motion.
+camera_name: overview-cam # TODO(event): verified name; verify physical viewpoint remains fixed.
+workspace_roi: null # TODO(event): [left, top, right, bottom] around usable tabletop, full-image pixels.
+difference_threshold: 35 # TODO(event): minimum per-channel change (0..255); tune on actual images.
+min_area_px: 80 # TODO(event): smallest fastener area; tune for camera distance.
+opening_radius_px: 0 # TODO(event): use 1 only if noise dominates; may erase thin parts.
+closing_radius_px: 1 # TODO(event): bridges 1-pixel gaps; nearby/touching objects may merge.
+crop_padding_px: 8 # TODO(event): consistent crop context for teammate's models.
+orientation_min_ratio: 2.0 # TODO(event): below this PCA ratio, orientation is reported as unknown.
+max_foreground_fraction: 0.4 # TODO(event): abort on large scene changes; not a safety-rated check.

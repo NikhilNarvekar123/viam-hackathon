@@ -1,0 +1,14 @@
+# NUC setup: install CPU torch/torchvision wheels first from
+# https://download.pytorch.org/whl/cpu (never CUDA builds).
+# Heavy requirements below are NOT installed during pre-event stub work.
+anomalib[openvino]==2.7.0
+openvino
+openvino-genai
+viam-sdk
+
+# Fake pipeline and tests
+numpy
+pillow
+pyyaml
+pytest
+python-dotenv

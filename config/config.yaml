@@ -1,0 +1,73 @@
+# Simulation placeholders, not hardware calibration.
+# --fake selects fakes; no --fake explicitly selects real_backend.
+# Real mode never moves without --confirm-motion. Stub models remain the default.
+hardware:
+  real_backend: viam
+  viam:
+    camera: camera # TODO(event): color camera resource name.
+    depth_camera: null # TODO(event): optional depth camera resource name.
+    arm: arm # TODO(event): arm resource name.
+    gripper: gripper # TODO(event): gripper resource name.
+    down_orientation: {o_x: 0, o_y: 0, o_z: -1, theta: 0} # TODO(event): verify downward tool orientation.
+camera:
+  samples: data/samples
+  roi: null # TODO(event): set [left, top, right, bottom].
+models:
+  detector:
+    implementation: stub # stub | openvino; keep stub until the exported model is verified.
+    image_size: 256 # TODO(event): match the exported model's training size.
+    cache_dir: models/cache
+    normalization_in_model: true # VERIFY: exported model includes model-specific normalization.
+    mean: [0.485, 0.456, 0.406] # Used only if normalization_in_model=false; match training.
+    std: [0.229, 0.224, 0.225]
+    score_output: pred_score # VERIFY: actual exported output name.
+    heatmap_output: anomaly_map # VERIFY: actual exported output name (null if absent).
+    device: CPU # TODO(event): benchmark on event hardware.
+    path: models/anomaly.xml # TODO(event): trained scenario model.
+    threshold: 0.5 # TODO(event): calibrate against held-out good images.
+  decider:
+    implementation: stub # stub | rules | openvino; load failures fall back to rules.
+    device: CPU # TODO(event): benchmark on event hardware.
+    path: models/vlm # TODO(event): select and export model.
+    cache_dir: models/cache/vlm
+    max_new_tokens: 96 # TODO(event): tune latency while allowing complete JSON.
+    warmup_image_size: 256 # TODO(event): match representative crop size.
+    rules_defect_type: unknown # TODO(event): label for an unclassified flagged item.
+    overlay:
+      alpha: 0.5
+      value_min: 0.0 # TODO(event): verify exported anomaly-map scale.
+      value_max: 1.0 # TODO(event): verify exported anomaly-map scale.
+    # TODO(event): adapt inspection instructions to revealed scenario.
+    prompt: >-
+      Inspect this flagged item. Defect types: {defect_types}.
+      Allowed actions: {allowed_actions}.
+      Return JSON only with defect_type, action, and a short reason.
+defect_types: [scratch, spot] # TODO(event): revealed defect types.
+allowed_actions: [reject] # TODO(event): revealed allowed actions; retain safe reject.
+action_to_bin: {reject: reject_bin} # TODO(event): scenario action routing.
+sorting:
+  pick_mode: fixed # TODO(event): fixed or vision (vision is fake-only until task 8).
+  home_pose: home # TODO(event): teach safe home.
+  above_pick_pose: above_pick # TODO(event): teach safe approach.
+  pick_pose: pick # TODO(event): teach pick.
+  above_pick_z_offset_mm: 50 # TODO(event): safe vertical clearance; verify +Z is up.
+  vision_stub_xyz_mm: [100, 100, 20] # TODO(event): simulation only, not calibrated.
+  pass_bin: box # TODO(event): good-item destination.
+  reject_bin: reject_bin # TODO(event): defect destination.
+  above_bin_poses: {box: above_box, reject_bin: above_reject} # TODO(event): teach release poses above bins.
+poses_file: config/poses.json # TODO(event): replace ALL placeholder coordinates before hardware use.
+logs_dir: logs
+stub:
+  detector:
+    seed: 7
+    error_rate: 0.2
+  decider:
+    seed: 11
+    malformed_rate: 0.15
+    disallowed_rate: 0.15
+    valid_action: reject # TODO(event): scenario response simulation.
+    disallowed_action: invalid_stub_action # TODO(event): keep outside allowed_actions.
+fake:
+  camera_delay_s: 0.001
+  arm_delay_s: 0.001
+  gripper_delay_s: 0.001

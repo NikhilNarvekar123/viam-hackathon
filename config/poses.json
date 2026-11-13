@@ -1,0 +1,10 @@
+{
+  "_TODO": "Fake-only placeholders. Teach and validate every pose before real motion.",
+  "home": {"joint_positions_deg": [0, 0, 0, 0, 0, 0]},
+  "pick": {"joint_positions_deg": [0, 0, 0, 0, 0, 0]},
+  "above_pick": {"joint_positions_deg": [0, 0, 0, 0, 0, 0]},
+  "above_box": {"joint_positions_deg": [0, 0, 0, 0, 0, 0]},
+  "above_reject": {"joint_positions_deg": [0, 0, 0, 0, 0, 0]},
+  "box": {"joint_positions_deg": [0, 0, 0, 0, 0, 0]},
+  "reject_bin": {"joint_positions_deg": [0, 0, 0, 0, 0, 0]}
+}
