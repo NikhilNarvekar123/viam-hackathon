@@ -54,11 +54,14 @@ class OpenVINODetector:
         model = self.core.read_model(str(root / settings["path"]))
         if len(model.inputs) != 1:
             raise ValueError("Anomaly model must have one image input")
-        if self.device.split(".")[0] == "NPU":
-            # VERIFY: exported NPU operations and static NCHW shape support.
-            model.reshape({model.input(0): list(warmup.shape)})
-        # VERIFY: input is float32 NCHW RGB [0,1]; export includes normalization
-        # when normalization_in_model=true. Compare exported scores against CPU training.
+        port = model.input(0)
+        if tuple(port.shape) != warmup.shape:
+            raise ValueError(f"Configured tensor {warmup.shape} does not match exported input {tuple(port.shape)}")
+        if port.element_type.get_type_name() != "f32":
+            raise ValueError("This adapter expects an exported float32 NCHW image input")
+        # Do not reshape an export to hide a preprocessing/config mismatch.
+        # V2 graph verified: input NCHW RGB [0,1], embedded resize to 256x256,
+        # then ImageNet normalization. Color semantics still require training provenance.
         self.compiled = self.core.compile_model(model, self.device, {"PERFORMANCE_HINT": "LATENCY"})
         self.input = self.compiled.input(0)
         # VERIFY: export output names; do not silently assume port order.
@@ -76,6 +79,9 @@ class OpenVINODetector:
         score, heatmap = self._infer(image_tensor(frame.image, self.settings))
         # Return the heatmap aligned to the original crop for future overlays.
         if heatmap is not None and heatmap.shape != (frame.image.height, frame.image.width):
-            heatmap = np.asarray(Image.fromarray(heatmap).resize(
-                frame.image.size, Image.Resampling.BILINEAR), dtype=np.float32)
+            width, height = frame.image.size
+            side = max(width, height)
+            square = Image.fromarray(heatmap).resize((side, side), Image.Resampling.BILINEAR)
+            left, top = (side-width)//2, (side-height)//2
+            heatmap = np.asarray(square.crop((left, top, left+width, top+height)), dtype=np.float32)
         return Detection(score, score >= self.threshold, heatmap)

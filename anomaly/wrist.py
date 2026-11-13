@@ -7,7 +7,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 import numpy as np
 from anomaly.detector import OpenVINODetector
-from anomaly.object_crops import automatic_crops
+from anomaly.object_crops import automatic_crops, extract_candidate_crops
 from anomaly.stub import StubDetector
 from robot.locate import annotate
 from tools.inspect_wrist import capture, inspect, annotate_scores, validate_rois
@@ -41,15 +41,19 @@ class WristInspector:
         image.save(folder/'frame.png')
         rois = self.settings.get('rois')
         localization = None
+        crops = None
         if not rois:
             rois,localization,mask = automatic_crops(image,self.settings['auto_crop'])
+            crops = extract_candidate_crops(image,localization,mask)
             annotate(image,localization,mask).save(folder/'detected_objects.png')
             Image.fromarray(mask.astype(np.uint8)*255).save(folder/'foreground_mask.png')
             (folder/'candidates.json').write_text(json.dumps(localization,indent=2,allow_nan=False))
         records = []
         if rois:
-            validate_rois(image,rois)
-            records = inspect(image,rois,self.detector,self.threshold,folder)
+            if crops is None:
+                validate_rois(image,rois)
+            records = inspect(image,rois,self.detector,self.threshold,folder,crops=crops,
+                              objects=localization['objects'] if localization else None)
         else:
             print('Wrist camera: no candidate crops; no inference performed')
         scored = annotate_scores(image,records)

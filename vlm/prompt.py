@@ -15,8 +15,8 @@ def build_prompt(template: str, defect_types: list[str], allowed_actions: list[s
     prompt = prompt.replace("{allowed_actions}", json.dumps(allowed_actions))
     example = json.dumps({"defect_type": defect_types[0], "action": "reject",
                           "reason": "Visible defect."})
-    return (prompt.strip() + "\nLeft: original crop. Right: red heatmap overlay when available. "
-            "An identical right view may mean the heatmap is unavailable.\n"
+    return (prompt.strip() + "\nInspect the physical object in the unannotated original RGB crop. "
+            "No heatmap is supplied. Judge only visible physical evidence.\n"
             "Return JSON only, one object with defect_type, action, and reason. "
             "Choose action only from allowed_actions. Keep reason to at most 15 words. "
             "No markdown or surrounding text.\nExample reply (format only, not a prediction): "

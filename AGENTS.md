@@ -14,10 +14,10 @@ Judging criteria: detection accuracy, correct responses (VLM decisions), latency
 
 1. **Capture**: get a color frame (and optionally depth) from the Viam camera, then crop to the item region of interest (ROI).
 2. **Detect**: an Anomalib anomaly model, trained on good images only and exported to OpenVINO IR. Outputs an anomaly score, a heatmap, and pass/fail against a threshold.
-3. **Decide**: runs only for flagged items. A VLM (`openvino_genai.VLMPipeline`) receives the crop plus the heatmap overlay and returns JSON with the defect type and an action chosen from the fixed list in config. If the output doesn't parse or the action isn't in the list, use `"reject"`.
+3. **Decide**: the current wrist loop sends scores below the configured 0.75 operating threshold directly to GOOD. Flagged items escalate to the optional local Viam-hosted VLM. It receives a neighbor-masked square crop resized to 224x224 with OpenCV Lanczos4 and encoded as PNG, never a heatmap/annotation or anomaly score. Ordered `observation` and boolean `defect` JSON fields map to accept/reject; invalid/error responses map to HOLD. VLM is disabled in this snapshot, so flagged items remain HOLD without a VLM connection. The threshold and model accuracy are not validated; configure and evaluate before enabling automated actions.
 4. **Sort**: the Viam Python SDK moves the arm through taught poses: home → pick → box or reject bin → home.
 
-`main.py` runs this loop. Each stage lives in its own module behind a small interface so it can be swapped or faked.
+The current default `main.py` homes, opens the gripper, captures overview/wrist images, and logs inspection/routing decisions. Picking and sorting are NOT executed in the default loop. Legacy real sorter poses remain placeholders. Each stage lives behind an interface so it can be swapped or faked.
 
 ## Hardware and runtime
 
@@ -67,7 +67,7 @@ python robot/teach.py <name>     # save the arm's current pose to config/poses.j
 ## OpenVINO notes
 
 - Set `CACHE_DIR` on `ov.Core()` so NPU and GPU models don't recompile on every start.
-- The NPU needs static input shapes. Reshape models before compiling for NPU.
+- The NPU needs static input shapes. Validate the export's input contract; do not reshape an anomaly export merely to hide a configuration mismatch.
 - Compile and warm up every model once at startup. Never reload a model per item.
 - Use `PERFORMANCE_HINT: LATENCY` for per-item inference.
 - VLM: keep `max_new_tokens` small, and prompt for JSON only.

@@ -87,7 +87,8 @@ def test_mocked_openvino_compile_once_and_warmup(config, tmp_path, monkeypatch, 
     settings.update(device=device, image_size=4)
     model = Mock()
     model.inputs = ["input"]
-    model.input.return_value = "input"
+    model.input.return_value = SimpleNamespace(shape=(1,3,4,4),
+        element_type=SimpleNamespace(get_type_name=lambda: 'f32'))
     compiled = Mock()
     compiled.input.return_value = "input"
     compiled.output.side_effect = lambda name: name
@@ -105,11 +106,21 @@ def test_mocked_openvino_compile_once_and_warmup(config, tmp_path, monkeypatch, 
     detector.detect(frame)
     assert compiled.call_count == 3
     core.compile_model.assert_called_once_with(model, device, {"PERFORMANCE_HINT": "LATENCY"})
-    assert model.reshape.call_count == int(device == "NPU")
-    if device == "NPU":
-        model.reshape.assert_called_once_with({"input": [1, 3, 4, 4]})
+    model.reshape.assert_not_called()  # Never hide an export/input mismatch by reshaping.
     assert result.is_anomalous and result.heatmap.shape == (6, 8)
     assert (tmp_path / settings["cache_dir"]).is_dir()
+
+
+@pytest.mark.parametrize('shape,dtype', [((1,3,256,256),'f32'), ((1,3,4,4),'u8')])
+def test_reject_model_input_mismatch(config, tmp_path, monkeypatch, shape, dtype):
+    settings=config['models']['detector'];settings['image_size']=4
+    model=Mock();model.inputs=['input']
+    model.input.return_value=SimpleNamespace(shape=shape,element_type=SimpleNamespace(get_type_name=lambda:dtype))
+    core=Mock();core.available_devices=['CPU'];core.read_model.return_value=model
+    monkeypatch.setitem(sys.modules,'openvino',SimpleNamespace(Core=lambda:core))
+    with pytest.raises(ValueError): OpenVINODetector(settings,tmp_path)
+    core.compile_model.assert_not_called()
+    model.reshape.assert_not_called()
 
 
 def test_detector_config_selection(config, tmp_path, monkeypatch):

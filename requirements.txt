@@ -9,6 +9,7 @@ viam-sdk
 # Fake pipeline and tests
 numpy
 pillow
+opencv-python-headless>=4.8
 pyyaml
 pytest
 python-dotenv

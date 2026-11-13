@@ -4,15 +4,18 @@ from PIL import Image, ImageDraw
 import pytest
 import yaml
 
-from anomaly.object_crops import automatic_crops
+from anomaly.object_crops import automatic_crops, extract_candidate_crops, square_cutout
+import numpy as np
 
 
-def settings():
-    return yaml.safe_load((Path(__file__).resolve().parents[1] / 'config/wrist_inspection.yaml').read_text())['auto_crop']
+def settings(size=(240,240)):
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / 'config/wrist_inspection.yaml').read_text())['auto_crop']
+    cfg['reference_size_px'] = list(size)
+    return cfg
 
 
 def test_empty_table():
-    boxes, result, mask = automatic_crops(Image.new('RGB', (200, 200), 'gray'), settings())
+    boxes, result, mask = automatic_crops(Image.new('RGB', (200, 200), 'gray'), settings((200,200)))
     assert boxes == []
     assert not mask.any()
 
@@ -28,8 +31,7 @@ def test_two_separate_objects_and_edge_clutter():
     assert len(result['rejected_candidates']) >= 1
     for box in boxes:
         assert all(isinstance(x, int) for x in box)
-        assert 0 <= box[0] < box[2] <= 240
-        assert 0 <= box[1] < box[3] <= 240
+        assert box[2]-box[0] == box[3]-box[1] > 0
 
 
 def test_bad_config():

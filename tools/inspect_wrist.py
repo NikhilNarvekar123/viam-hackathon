@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw
 import yaml
 
 from anomaly.detector import OpenVINODetector
-from anomaly.object_crops import automatic_crops
+from anomaly.object_crops import automatic_crops, extract_candidate_crops
 from robot.locate import annotate
 from core.types import Frame
 from robot.camera import capture_camera
@@ -42,18 +42,22 @@ async def capture(settings, fake):
         return (await camera.get_frame()).image
 
 
-def inspect(image, rois, detector, threshold, folder):
+def inspect(image, rois, detector, threshold, folder, crops=None, objects=None):
     """One model call per ROI. Color scale is per crop, NOT a decision threshold."""
-    validate_rois(image, rois)
+    if crops is None:
+        validate_rois(image, rois)
+        crops = [image.crop(box) for box in rois]
+    if len(crops) != len(rois):
+        raise ValueError("Crop/ROI count mismatch")
     records = []
-    for index, box in enumerate(rois, 1):
-        crop = image.crop(box)
+    for index, (box, crop) in enumerate(zip(rois, crops), 1):
         started = time.perf_counter()
         detection = detector.detect(Frame(str(index), crop))
         elapsed = (time.perf_counter() - started) * 1000
         prefix = folder / f"object_{index:03d}"
         crop.save(str(prefix) + ".png")
-        record = dict(id=index, bbox_xyxy=box, score=detection.score,
+        record = dict(id=index, bbox_xyxy=objects[index-1]['bbox_xyxy'] if objects else box,
+                      crop_bbox_xyxy=box, crop_size_px=list(crop.size), score=detection.score,
                       threshold=threshold, inference_ms=elapsed,
                       classification="unclassified" if threshold is None else
                       ("anomalous" if detection.score >= threshold else "normal"))
@@ -127,8 +131,10 @@ def main():
             return
         rois = [[0, 0, image.width, image.height]] if args.whole_frame else (args.roi or settings.get("rois"))
         localization = None
+        crops = None
         if not rois:
             rois, localization, mask = automatic_crops(image, settings["auto_crop"])
+            crops = extract_candidate_crops(image, localization, mask)
             annotate(image, localization, mask).save(folder / "detected_objects.png")
             Image.fromarray(mask.astype(np.uint8) * 255).save(folder / "foreground_mask.png")
             (folder / "candidates.json").write_text(json.dumps(localization, indent=2, allow_nan=False) + "\n")
@@ -137,13 +143,15 @@ def main():
             if not rois:
                 print("No usable candidates; no inference performed. Adjust view or crop settings.")
                 return
-        validate_rois(image, rois)
+        if crops is None:
+            validate_rois(image, rois)
         model_settings = dict(settings["model"])
         # Adapter requires a threshold; its boolean is ignored when threshold is unset.
         model_settings["threshold"] = threshold if threshold is not None else 0.0
         print("Preprocessing is provisional. Confirm with trainer; scores are not probabilities.")
         detector = OpenVINODetector(model_settings, ROOT)
-        records = inspect(image, rois, detector, threshold, folder)
+        records = inspect(image, rois, detector, threshold, folder, crops=crops,
+                          objects=localization['objects'] if localization else None)
         scored = annotate_scores(image, records)
         scored.save(folder / "scored_objects.png")
         if localization is not None:
