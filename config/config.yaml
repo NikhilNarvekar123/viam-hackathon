@@ -1,6 +1,25 @@
+wrist_inspection_config: config/wrist_inspection.yaml
 # Simulation placeholders, not hardware calibration.
 # --fake selects fakes; no --fake explicitly selects real_backend.
 # Real mode never moves without --confirm-motion. Stub models remain the default.
+overview:
+  cycle_delay_s: 2.0
+  camera_name: overview-cam
+  background: data/overview_empty_overhead.png
+  locator_config: config/localization.yaml
+  max_area_px: 12000
+  output_dir: logs/overview
+  home:
+    switch_name: home-pose
+    arm_name: arm
+    gripper_name: gripper
+    gripper_open_position: 850
+    gripper_open_tolerance: 30
+    speed_deg_s: 5.0
+    acceleration_deg_s2: 10.0
+    timeout_s: 120
+    joint_tolerance_deg: 1.0
+    settle_s: 0.5
 hardware:
   real_backend: viam
   viam:

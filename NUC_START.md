@@ -9,7 +9,7 @@ cd ~/viam-hackathon
 python3 -m venv .venv
 source .venv/bin/activate
 pip install numpy pillow pyyaml pytest python-dotenv
-python main.py --fake --n 10
+python main.py --fake --n 2
 pytest
 ```
 
@@ -27,9 +27,11 @@ resource names for your station. Its output is image pixels, not robot targets.
 
 ## Safety and current limitations
 
-- Models default to stubs. Real ML integrations have VERIFY markers.
-- All checked-in arm poses are placeholders. Do not run the main pipeline with
-  --confirm-motion until real poses and safety settings have been validated.
+- Fake mode and the legacy sorter use stubs. The default live loop uses the
+  separately supplied OpenVINO model specified in config/wrist_inspection.yaml.
+- All checked-in project poses are placeholders. Do not execute the legacy real
+  sorter with them. The default loop instead uses the organizer home switch;
+  validate that saved home/path before using --confirm-motion.
 - Automatic camera-to-robot calibration and scattered-object grasping are unfinished.
 - The gripper demo is separate, fake by default, and requires explicit flags for
   jaw movement. Stop teleop and clear the gripper before any real test.

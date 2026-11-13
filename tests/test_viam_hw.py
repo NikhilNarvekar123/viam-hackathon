@@ -181,7 +181,7 @@ def test_cli_missing_credentials_no_traceback(tmp_path):
     script.write_text((ROOT / "main.py").read_text())
     env = {key: value for key, value in os.environ.items() if not key.startswith("VIAM_")}
     env["PYTHONPATH"] = str(ROOT)
-    result = subprocess.run([sys.executable, str(script), "--config",
+    result = subprocess.run([sys.executable, str(script), "--stage", "sort", "--config",
                              str(ROOT / "config/config.yaml")],
                             env=env, capture_output=True, text=True)
     assert result.returncode == 1

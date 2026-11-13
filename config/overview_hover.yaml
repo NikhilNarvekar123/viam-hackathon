@@ -1,0 +1,19 @@
+# Provisional overview mapping. Preview by default; --plan is read-only planning.
+camera_name: overview-cam
+arm_name: arm
+gripper_name: gripper
+wrist_camera_name: cam
+mapping: logs/calibration/capture_20261113T195209_430008Z/candidate_mapping.json
+background: data/overview_empty_overhead.png
+locator_config: config/localization.yaml
+motion:
+  # User explicitly chose to trust configured table top rather than depth estimate.
+  assumed_table_top_z_mm: -23.0
+  requested_lowest_gripper_clearance_mm: 101.6
+  # Runtime UFactory commands; not a cloud configuration change.
+  speed_deg_s: 5.0
+  acceleration_deg_s2: 10.0
+  collision_buffer_mm: 5.0
+  max_xy_displacement_mm: 300.0
+  # Endpoint height, orientation and camera offset are derived from LIVE frames
+  # and gripper box geometry. No manually guessed endpoint pose is used.
