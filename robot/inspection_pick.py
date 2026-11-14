@@ -137,12 +137,16 @@ async def verify_main_pick_start(config,root):
 
 
 def setup_good_destination(st,settings):
-    gx,gy=map(float,settings['good_xy'])
-    far=[gx+2*picker.PLACE_PITCH_MM,gy+3*picker.PLACE_PITCH_MM]
-    if not all(picker.reachable([x,y,st.scan_g[2]]) for x,y in [(gx,gy),far]):
-        raise ValueError('GOOD place area is not reachable at carrying height')
-    st.box=dict(drop=np.array([gx,gy]),rim=picker.TABLE_Z_EXPECTED,drop_z=float(st.scan_g[2]),
-                bbox=(gx-40,far[0]+40,gy-40,far[1]+40))
+    """GOOD and (when set) REJECT place areas: every place reachable at PLACE_CARRY_MIN_Z, areas kept apart."""
+    for key in ('good_xy','reject_xy'):
+        spot=settings[key]
+        if spot is not None and not all(picker.reachable([x,y,picker.PLACE_CARRY_MIN_Z]) for x,y in picker.place_grid(spot)):
+            raise ValueError(f'{key} place area is not reachable at PLACE_CARRY_MIN_Z')
+    good=picker.place_area(settings['good_xy'])
+    if settings['reject_xy'] is not None and picker.dist_to_rect(settings['reject_xy'],good)<picker.SPOT_KEEPOUT_MM:
+        raise ValueError('reject_xy is too close to the GOOD place area')
+    st.box=dict(drop=np.array(settings['good_xy'],float),rim=picker.TABLE_Z_EXPECTED,
+                drop_z=float(st.scan_g[2]),bbox=good)
 
 
 async def execute_result(st,result,skip):
@@ -157,26 +161,36 @@ async def execute_result(st,result,skip):
 
 
 class FakeStation:
-    """Fake delivery interface; never creates Viam clients."""
+    """Fake delivery interface; never creates Viam clients. Its camera sits at the gripper and sees a 20 mm block
+    wherever something was let go (self.lying: share it to keep the fake table across stations)."""
     def __init__(self,settings):
-        self.args=SimpleNamespace(good_xy=settings['good_xy'],reject_xy=None,hold_xy=None)
+        self.args=SimpleNamespace(good_xy=settings['good_xy'],reject_xy=settings['reject_xy'],hold_xy=None)
         self.gpos=np.array([400.,0.,350.]);self.scan_g=self.gpos.copy()
-        self.K=SimpleNamespace(width=640,height=480)
+        self.K=picker.Intrinsics(600.,600.,320.,240.,640,480);self.lying=[]
         self.placed={'box':0,'reject':0,'hold':0};self.gripper=self;self.actions=[]
         self.released_at=None;self.jaws_open=False
     async def move_gripper(self,xyz,theta,what,**kwargs):
         self.gpos=np.array(xyz,float);self.actions.append(dict(move=self.gpos.tolist(),what=what))
     async def open(self):
-        self.actions.append(dict(open_at=self.gpos.tolist()))
+        self.actions.append(dict(open_at=self.gpos.tolist()));self.lying.append(self.gpos[:2].tolist())
     async def confirm(self,*args,**kwargs): pass
     async def go_scan(self,*args,**kwargs): self.gpos=self.scan_g.copy()
+    def gripper_xyz_for_camera(self,cam_xyz): return np.asarray(cam_xyz,float)
+    async def look(self,tag,closeups=True):
+        depth=np.full((480,640),440.)
+        for x,y in self.lying:
+            v,u=int(240-(x-self.gpos[0])*600/440),int(320-(y-self.gpos[1])*600/440)
+            depth[max(v-14,0):max(v+14,0),max(u-14,0):max(u+14,0)]=420.
+        info=picker.detect_depth(depth,self.K)[1]
+        info['R'],info['t']=np.array([[0.,-1,0],[-1,0,0],[0,0,-1]]),np.array([self.gpos[0],self.gpos[1],440.])
+        return [],info
 
 
 async def run_pick_loop(config,root,fake=False,confirm_motion=False,cycles=None,pause=None,bridge=None,state=None):
     if not fake and not confirm_motion: raise ValueError('Picking requires explicit --confirm-motion')
     settings=yaml.safe_load((root/config['pick_bolt_config']).read_text())
-    if settings['reject_xy'] is not None or settings['hold_xy'] is not None:
-        raise ValueError('This integration supports reject-return and HOLD-without-grasp only')
+    if settings['hold_xy'] is not None:
+        raise ValueError('This integration leaves HOLD ungrasped; hold_xy must be null')
     if settings['resources']!={'arm':picker.ARM,'gripper':picker.GRIPPER,'camera':picker.CAM,
                                'motion':picker.MOTION,'teleop':picker.TELEOP}:
         raise ValueError('Configured resources must match the imported controller resource names')
@@ -204,13 +218,14 @@ async def run_pick_loop(config,root,fake=False,confirm_motion=False,cycles=None,
             args=picker.parse_args([])
             args.address=credentials['VIAM_ADDRESS'];args.mode='pick';args.yes=True;args.home=True
             args.force=False;args.index=None;args.close_up=settings['close_up'];args.frames=settings['frames']
-            args.good_xy=settings['good_xy'];args.reject_xy=None;args.hold_xy=None;args.anomaly_service=None
+            args.good_xy=settings['good_xy'];args.reject_xy=settings['reject_xy'];args.hold_xy=None;args.anomaly_service=None
             args.record_hz=0;args.debug_dir=str(folder);args.save_raw=False
             # Register Switch before the SDK constructs clients at connect time.
             import viam.components.switch
             st=IntegratedStation(args,config)
             await st.connect();st.inspection_handler=bridge
         st.placed=state.setdefault('placed',{'box':0,'reject':0,'hold':0})
+        if fake:st.lying=state.setdefault('fake_table',[])
         while cycles is None or index<cycles:
             if st.placed['box']>=settings['max_good_places']:
                 print('GOOD place area capacity reached; stopping.');break

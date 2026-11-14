@@ -31,8 +31,8 @@ overview:
     gripper_name: gripper
     gripper_open_position: 850
     gripper_open_tolerance: 30
-    speed_deg_s: 5.0
-    acceleration_deg_s2: 10.0
+    speed_deg_s: 80.0
+    acceleration_deg_s2: 80.0
     timeout_s: 120
     joint_tolerance_deg: 1.0
     settle_s: 0.5

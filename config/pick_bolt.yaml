@@ -1,10 +1,10 @@
 # Opt-in only: main.py --stage pick --confirm-motion. Not physically validated by this integration.
-good_xy: [300.0, 250.0]  # Teammate's existing destination, retained at user's request.
-reject_xy: null          # REJECT is picked, then returned to the original grasp location.
+good_xy: [290.0, 330.0]  # GOOD, taped +y zone; places x 290..395, y 330..365: the claws must stay clear of wall-side (y>=450).
+reject_xy: [290.0, -350.0]  # REJECT, taped -y zone (tape x 280..430, y -490..-330); places y -350..-385. null = put back.
 hold_xy: null            # Inspection errors/HOLD leave the item unpicked.
 max_good_places: 12      # Stop before exceeding the controller's three-column/four-row place area.
 mapping_config: config/crop_target_mapping.yaml
-pick_order: tallest_first  # input also supported. Rejected items are still returned, not cleared away.
+pick_order: tallest_first  # input also supported.
 target_match_radius_mm: 15.0  # Bind fresh picker/refinement detections to the supplied target only.
 max_batch_age_s: 300.0       # Keep the scene unchanged until the entire batch finishes.
 max_frame_age_s: 30.0

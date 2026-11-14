@@ -23,7 +23,7 @@ auto_crop:
   # Exclude poorly framed parts and border clutter. Keep parts inside this margin.
   frame_edge_margin_px: 15
   # Foreground Laplacian variance at reference resolution; reject smooth shadows.
-  min_laplacian_variance: 50
+  min_laplacian_variance: 40  # was 50: a real 25 mm screw scored 48.6; kept parts score 160+
   # Suppress small aligned fragments mostly overlapping a larger object's box.
   fragment_min_bbox_coverage: 0.75
   fragment_max_area_ratio: 0.25

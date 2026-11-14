@@ -45,8 +45,8 @@ class ExternalBoxBatch:
         for key in ['target_match_radius_mm','max_batch_age_s']:
             if not math.isfinite(float(self.settings[key])) or self.settings[key]<=0:
                 raise ValueError(f'Invalid {key}')
-        if self.settings['reject_xy'] is not None or self.settings['hold_xy'] is not None:
-            raise ValueError('External batch supports reject-return and ungrasped HOLD only')
+        if self.settings['hold_xy'] is not None:
+            raise ValueError('External batch leaves HOLD ungrasped; hold_xy must be null')
         expected=dict(arm=picker.ARM,gripper=picker.GRIPPER,camera=picker.CAM,motion=picker.MOTION,teleop=picker.TELEOP)
         if self.settings['resources']!=expected:raise ValueError('Controller and pipeline resource names differ')
         if not 1<=self.settings['max_good_places']<=12:raise ValueError('Invalid GOOD area capacity')
@@ -59,7 +59,7 @@ class ExternalBoxBatch:
             args.address=credentials['VIAM_ADDRESS'];args.mode='pick';args.yes=True;args.force=False
             args.index=None;args.anomaly_service=None;args.record_hz=0
             args.frames=self.settings['frames'];args.close_up=self.settings['close_up']
-            args.good_xy=self.settings['good_xy'];args.reject_xy=None;args.hold_xy=None
+            args.good_xy=self.settings['good_xy'];args.reject_xy=self.settings['reject_xy'];args.hold_xy=None
             args.debug_dir=str(self.root/'logs/inspection_pick');Path(args.debug_dir).mkdir(parents=True,exist_ok=True)
             import viam.components.switch
             self.st=IntegratedStation(args,self.config)
@@ -70,6 +70,7 @@ class ExternalBoxBatch:
                 if hasattr(self.st,'robot'):await self.st.close()
                 raise
         self.st.placed=self.state.setdefault('placed',{'box':0,'reject':0,'hold':0})
+        if self.fake:self.st.lying=self.state.setdefault('fake_table',[])
         return self
 
     async def __aexit__(self,kind,exc,tb):
@@ -240,6 +241,9 @@ class ExternalBoxBatch:
             if action=='accept' and self.st.placed['box']>=self.settings['max_good_places']:
                 entry['status']='good_area_full';print(f'Batch crop {ident}: GOOD area full; not grasped.');save();continue
             xy=np.array(binding['table_point_world_mm'][:2])
+            if any(picker.dist_to_rect(xy,picker.place_area(s))==0 for s in
+                   (self.settings['good_xy'],self.settings['reject_xy']) if s is not None):
+                entry['status']='in_place_area';print(f'Batch crop {ident}: already in a place area; not picked.');save();continue
             route={'accept':'box','reject':'reject'}[action]
             print(f"Batch crop {ident}: {action} -> existing picker at world XY {xy.tolist()}",flush=True)
             if self.fake:

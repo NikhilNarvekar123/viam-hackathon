@@ -139,8 +139,15 @@ STANDING_TIP_MM = 27.0         # fingertip height for every standing bolt; its m
                                # deep - measure yours) clears an 83 mm bolt by about 4 mm
 BODY_CLEAR_MM, CAM_CLEAR_MM = 80.0, 65.0   # room the gripper body / the wrist camera need from the box walls
 SPOT_KEEPOUT_MM = 150.0        # reject / hold spots must be this far from the box
-PLACE_PITCH_MM = 35.0          # parts set down at a spot go side by side this far apart, in rows of three (so a spot
-                               # needs about 3 x 4 pitches of free table). Widen it for parts longer than this
+PLACE_PITCH_MM = 35.0          # a spot is a grid of places this far apart: PLACE_COLS along +x, PLACE_ROWS away from
+PLACE_COLS, PLACE_ROWS = 3, 4  # the parts (+y on the +y side of the arm, -y on the -y side). A part takes the first
+PLACE_GAP_MM = 8.0             # place where the camera sees this much free table around it, and nothing within reach of
+JAW_SWEEP_MM, JAW_PAD_MM = 55.0, 20.0   # the opening jaws: they open across the part's middle (+-JAW_PAD_MM along
+                               # it) out to JAW_SWEEP_MM from its centre line (the xArm Gripper opens about 85 mm, plus
+                               # the fingers). No free place: the part is put back where it was picked
+PLACE_CARRY_MIN_Z = 200.0      # a place out of reach at carrying height is approached lower, never below this gripper
+                               # height; every place must be reachable here
+TAPE_MAX_MM = 2.0              # blobs this flat (tape marking a spot, a cable) do not take a place; anything taller does
 BOLT_LYING_MIN_H, BOLT_LYING_MAX_H = 6.0, 40.0
 BOLT_LYING_MIN_LEN, BOLT_LYING_MIN_ASPECT, BOLT_LYING_MAX_W = 25.0, 1.7, 45.0
 GRIP_MAX_SPAN_MM = 70.0        # widest thing the open jaws take with room to spare (the xArm Gripper opens about
@@ -863,6 +870,44 @@ def project_static(world_pts: np.ndarray, R: np.ndarray, t0: np.ndarray, K: Intr
     return dilate(mask, grow_px)
 
 
+def place_grid(spot) -> np.ndarray:
+    """Every place of a spot, (n, 2) world xy, in the order they are tried: PLACE_COLS along +x, then rows away from
+    the parts (+y for a spot on the +y side of the arm, -y for one on the -y side)."""
+    sy = 1.0 if spot[1] >= 0 else -1.0
+    return np.array([[spot[0] + PLACE_PITCH_MM * c, spot[1] + sy * PLACE_PITCH_MM * r]
+                     for r in range(PLACE_ROWS) for c in range(PLACE_COLS)], float)
+
+
+def place_area(spot) -> tuple:
+    """The table a spot takes, (xmin, xmax, ymin, ymax): its places grown by 40 mm. Nothing is picked from it."""
+    g = place_grid(spot)
+    return (g[:, 0].min() - 40.0, g[:, 0].max() + 40.0, g[:, 1].min() - 40.0, g[:, 1].max() + 40.0)
+
+
+def free_place(spot, taken, length_mm: float, width_mm: float) -> Optional[np.ndarray]:
+    """Where the next part is set down at a spot: the first place with PLACE_GAP_MM of free table around the part and
+    nothing the opening jaws would push, or None if it fits nowhere. taken: world xy, (n, 2), of what the camera sees
+    lying there. The part lies with its length pointing away from the arm's base (the jaws hold a long part across,
+    and set_down() turns the gripper to neutral_theta), so the jaws open across it, at its middle."""
+    taken = np.asarray(taken, float).reshape(-1, 2)
+    for xy in place_grid(spot):
+        out = xy / max(float(np.linalg.norm(xy)), 1e-9)
+        d = taken - xy
+        along, across = d @ out, np.abs(d @ np.array([-out[1], out[0]]))
+        body = np.hypot(along - np.clip(along, -length_mm / 2.0, length_mm / 2.0), across) >= width_mm / 2.0 + PLACE_GAP_MM
+        jaws = (np.abs(along) > JAW_PAD_MM) | (across >= JAW_SWEEP_MM)
+        if (body & jaws).all():
+            return xy
+    return None
+
+
+def table_xy(info: dict, K: Intrinsics, xs, ys) -> np.ndarray:
+    """World xy where the lines of sight through pixels (xs, ys) meet the table (needs info["R"], info["t"])."""
+    xs, ys, z = np.asarray(xs, float), np.asarray(ys, float), info["cam_height_mm"]
+    rays = np.stack([(xs - K.cx) / K.fx * z, (ys - K.cy) / K.fy * z, np.full(xs.shape, z)], axis=1)
+    return (rays @ info["R"].T + info["t"])[:, :2]
+
+
 def raised_world(info: dict, K: Intrinsics, limit: int = 20000) -> np.ndarray:
     """World points of everything a look saw standing above the table (needs info["R"], info["t"])."""
     ys, xs = np.nonzero(info["raised"] & info["valid"])
@@ -952,6 +997,11 @@ def reachable(g) -> bool:
     """Can the gripper frame be at g with the tool pointing straight down?"""
     wc = np.array([g[0], g[1], g[2] + WRIST_ABOVE_GRIPPER - SHOULDER_Z])
     return float(np.linalg.norm(wc)) <= REACH_MM and math.hypot(g[0], g[1]) >= 150.0
+
+
+def top_z(xy) -> float:
+    """Highest gripper height (pointing straight down) that reaches table point xy, 10 mm inside reachable()."""
+    return SHOULDER_Z - WRIST_ABOVE_GRIPPER + math.sqrt(max(REACH_MM ** 2 - xy[0] ** 2 - xy[1] ** 2, 0.0)) - 10.0
 
 
 def release_tip_z(rim: float, floor_z: float, margin_mm: float) -> float:
@@ -1543,19 +1593,44 @@ async def drop_in_box(st: Station):
         await st.go_scan()
 
 
-async def set_down(st: Station, xy, z: float, what: str):
-    """Carry what is held (at the current height) over a table spot, lower it, let go, come back up."""
-    carry_z = max(st.gpos[2], st.scan_g[2])
-    theta = neutral_theta(xy[0], xy[1])
+async def carry_over(st: Station, xy, theta: float, what: str) -> float:
+    """Carry what is held, at carrying height, until the gripper is over table point xy. Returns that height: lower
+    than the scan pose for a point too far out to reach up there (see top_z)."""
+    carry_z = min(max(st.gpos[2], st.scan_g[2]), top_z(xy))
     if math.hypot(xy[0] - st.gpos[0], xy[1] - st.gpos[1]) > 2.0:
         if _closest_to_base(st.gpos, xy) < 200.0 or st.gpos[2] < carry_z - 2.0:
             await st.move_gripper([st.scan_g[0], st.scan_g[1], carry_z], NATURAL_THETA, f"{what}: to the scan spot", linear=True)
         await st.move_gripper([xy[0], xy[1], carry_z], theta, f"{what}: over the spot", linear=True)
+    return carry_z
+
+
+async def lying_at(st: Station, spot, what: str) -> np.ndarray:
+    """Carry what is held to where the camera sees the places of a spot. Returns world xy, (n, 2), of everything
+    lying there. The table is the only record of what earlier runs left: counting places instead put the first
+    part of every run on top of the last run's (14 Nov: two runs in a row both started at x=300 y=250)."""
+    middle = place_grid(spot).mean(axis=0)
+    await carry_over(st, st.gripper_xyz_for_camera([middle[0], middle[1], 0.0]), NATURAL_THETA, f"{what}: camera")
+    objs, info = await st.look("place", closeups=False)
+    seen = raised_world(info, st.K)
+    seen = seen[seen[:, 2] < TABLE_Z_EXPECTED + BOLT_MAX_H][:, :2]      # not the part in the jaws, nor the jaws
+    # Every blob as well: a nut set down at x=300 y=250 read 4 mm high, under the raised cut, and the next part
+    # went on top of it (14 Nov, 16:27 UTC). Low, flat and color-only blobs are taken, wherever they are.
+    low = [table_xy(info, st.K, o.xs, o.ys) for o in objs if o.xs is not None and (o.height_mm or 0.0) < BOLT_MAX_H
+           and (o.height_mm is None or o.height_mm > TAPE_MAX_MM)]
+    return np.vstack([seen] + low)
+
+
+async def set_down(st: Station, xy, z: float, what: str):
+    """Carry what is held (at the current height) over a table spot, lower it, let go, come back up."""
+    theta = neutral_theta(xy[0], xy[1])
+    carry_z = await carry_over(st, xy, theta, what)
     await st.move_gripper([xy[0], xy[1], z], theta, f"{what}: lower", linear=True)
     await st.confirm("open gripper", gate=False)
     await st.gripper.open()
     st.jaws_open, st.released_at = True, time.time()
     await st.move_gripper([xy[0], xy[1], carry_z], theta, f"{what}: back up", linear=True)
+    if carry_z < st.scan_g[2] - 2.0:     # too far out to rise in place: back to the scan pose in one slanted line
+        await st.move_gripper(st.scan_g, NATURAL_THETA, f"{what}: back to the scan pose", linear=True)
 
 
 async def deliver(st: Station, res: dict, skip: list) -> str:
@@ -1572,8 +1647,14 @@ async def deliver(st: Station, res: dict, skip: list) -> str:
         await st.go_scan()
         return f"left in place ({dec.upper()}_XY not set)"
     name = "good" if dec == "box" else dec
-    k = st.placed[dec]                      # successive parts side by side, PLACE_PITCH_MM apart, rows of three
-    xy = [spot[0] + PLACE_PITCH_MM * (k % 3), spot[1] + PLACE_PITCH_MM * (k // 3)]
+    length, width = res.get("size", (0.0, 0.0))[:2]
+    xy = free_place(spot, await lying_at(st, spot, name), length, width)
+    if xy is None:
+        print(f"  the {name} spot has no free place for a {length:.0f} x {width:.0f} mm part: putting it back. Clear the spot.")
+        await set_down(st, res["xy"], res["grasp_z"] + 3.0, "put back")
+        skip.append(res["xy"])
+        await st.go_scan()
+        return f"left in place ({name} spot full)"
     await set_down(st, xy, res["grasp_z"] + 6.0, name)
     st.placed[dec] += 1
     skip.append(np.array(xy))               # and never pick it up again from there
@@ -1966,20 +2047,22 @@ async def run(args) -> int:
             # not picked from it, what lies there is not taken for a hand, reject / hold spots keep their distance).
             # Give the place area a type of its own if it ever needs rules a box does not have.
             gx, gy = (float(c) for c in args.good_xy)
-            far = [gx + 2 * PLACE_PITCH_MM, gy + 3 * PLACE_PITCH_MM]
-            if not (reachable([gx, gy, st.scan_g[2]]) and reachable([far[0], far[1], st.scan_g[2]])):
-                print(f"GOOD_XY {[gx, gy]} (or the far end of its rows, {far}) is out of reach at carrying height. "
+            area = place_area(args.good_xy)
+            if not all(reachable([x, y, PLACE_CARRY_MIN_Z]) for x, y in place_grid(args.good_xy)):
+                print(f"GOOD_XY {[gx, gy]} (or the far end of its places) is out of reach at PLACE_CARRY_MIN_Z. "
                       "Move it closer to the arm and run again.")
                 return 9
-            st.box = dict(drop=np.array([gx, gy]), rim=TABLE_Z_EXPECTED, drop_z=float(st.scan_g[2]),
-                          bbox=(gx - 40.0, far[0] + 40.0, gy - 40.0, far[1] + 40.0))
-            print(f"\nGood parts are set down at x={gx:.0f} y={gy:.0f} (GOOD_XY), {PLACE_PITCH_MM:.0f} mm apart in rows "
-                  f"of three, up to x={far[0]:.0f} y={far[1]:.0f}. No box is used.")
+            st.box = dict(drop=np.array([gx, gy]), rim=TABLE_Z_EXPECTED, drop_z=float(st.scan_g[2]), bbox=area)
+            print(f"\nGood parts are set down from x={gx:.0f} y={gy:.0f} (GOOD_XY), on free places within "
+                  f"x={area[0]:.0f}..{area[1]:.0f} y={area[2]:.0f}..{area[3]:.0f}. No box is used.")
         elif not await find_box(st):
             return 8
         for name, spot in (("REJECT_XY", args.reject_xy), ("HOLD_XY", args.hold_xy)):
             if spot is not None and dist_to_rect(spot, st.box["bbox"]) < SPOT_KEEPOUT_MM:
                 print(f"{name} {list(spot)} is within {SPOT_KEEPOUT_MM:.0f} mm of the box. Move it and run again.")
+                return 9
+            if spot is not None and not all(reachable([x, y, PLACE_CARRY_MIN_Z]) for x, y in place_grid(spot)):
+                print(f"{name} {list(spot)} (or the far end of its places) is out of reach at PLACE_CARRY_MIN_Z.")
                 return 9
         if args.mode == "box":
             print('\nBox only. Next step: MODE = "sort".')
@@ -2100,11 +2183,16 @@ def self_check():
     assert release_tip_z(100, 5, 85) == 65       # shallow box: the floor clearance wins
     assert release_tip_z(200, -30, 85) == 80 and release_tip_z(90, -30, 85) == 60   # a floor read below the table is not believed
 
-    # With GOOD_XY set a good part is set down at the spot (lowered, then released), never dropped. Fake station.
+    # With GOOD_XY set a good part is set down at the spot (lowered, then released), never dropped, and never on
+    # top of what already lies there. Fake station: its camera sits at the gripper, 440 mm up, looking down.
+    K = Intrinsics(600.0, 600.0, 320.0, 240.0, 640, 480)
+    down = np.array([[0.0, -1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, -1.0]])      # image down = toward the arm's base
+
     class Fake:
-        def __init__(self):
-            self.args = argparse.Namespace(good_xy=[300.0, 250.0], reject_xy=None, hold_xy=None)
+        def __init__(self, lying=()):
+            self.args = argparse.Namespace(good_xy=[300.0, 250.0], reject_xy=[300.0, -250.0], hold_xy=None)
             self.placed, self.moves, self.gripper = {"box": 0, "reject": 0, "hold": 0}, [], self
+            self.K, self.lying = K, list(lying)            # lying: where parts were let go
             self.gpos, self.scan_g = np.array([400.0, 0.0, 350.0]), np.array([350.0, 0.0, 350.0])
 
         async def move_gripper(self, xyz, theta, what, linear=False, gate=False):
@@ -2112,20 +2200,74 @@ def self_check():
 
         async def open(self):
             self.moves.append([round(float(c)) for c in self.gpos])
+            self.lying.append(self.gpos[:2].copy())
 
         async def confirm(self, what, gate=True):
             pass
 
         async def go_scan(self, gate=False):
             pass
+
+        def gripper_xyz_for_camera(self, cam_xyz):
+            return np.asarray(cam_xyz, float)
+
+        async def look(self, tag, closeups=True):       # a 20 mm cube wherever a part was let go
+            depth = np.full((480, 640), 440.0)
+            for x, y in self.lying:
+                v, u = int(240 - (x - self.gpos[0]) * 600 / 440), int(320 - (y - self.gpos[1]) * 600 / 440)
+                depth[max(v - 14, 0):max(v + 14, 0), max(u - 14, 0):max(u + 14, 0)] = 420.0
+            info = detect_depth(depth, K)[1]
+            info["R"], info["t"] = down, np.array([self.gpos[0], self.gpos[1], 440.0])
+            return [], info
     st, skip = Fake(), []
+    part = dict(decision="box", xy=np.array([400.0, 0.0]), grasp_z=69.0, size=(20.0, 20.0, 20.0))
     for _ in range(2):
-        result = asyncio.run(deliver(st, dict(decision="box", xy=np.array([400.0, 0.0]), grasp_z=69.0), skip))
-    # Opened 6 mm above the height it was grasped at, the second part one pitch along from the first.
-    assert st.moves == [[300, 250, 75], [300 + round(PLACE_PITCH_MM), 250, 75]], st.moves
-    assert result.startswith("at good spot") and len(skip) == 2, result
+        result = asyncio.run(deliver(st, part, skip))
+    again = Fake(st.lying)                  # the next run remembers nothing; the parts are still on the table
+    asyncio.run(deliver(again, part, skip))
+    spots = st.moves + again.moves
+    assert spots[0] == [300, 250, 75], spots      # the first place, opened 6 mm above the height it was grasped at
+    assert min(math.dist(p[:2], q[:2]) for i, p in enumerate(spots) for q in spots[:i]) >= 20 + PLACE_GAP_MM, spots
+    assert result.startswith("at good spot") and len(skip) == 3, result
+    asyncio.run(deliver(again, dict(part, decision="reject"), skip))
+    assert again.moves[-1] == [300, -250, 75], again.moves         # rejects go to the other end of the table
+    assert place_grid((300.0, -250.0))[PLACE_COLS].tolist() == [300.0, -250.0 - PLACE_PITCH_MM]   # rows grow away
+    full = place_grid((300.0, 250.0))
+    assert free_place((300.0, 250.0), full, 20.0, 20.0) is None
+    beside = np.array([300.0, 250.0]) + 30.0 * np.array([-250.0, 300.0]) / math.hypot(300.0, 250.0)
+    assert free_place((300.0, 250.0), [beside], 20.0, 20.0).tolist() != [300.0, 250.0]   # the opening jaws would push it
+
+    class Flat(Fake):        # a nut read 4 mm high: no raised pixels, only a blob, right under the camera
+        async def look(self, tag, closeups=True):
+            info = detect_depth(np.full((480, 640), 440.0), K)[1]
+            info["R"], info["t"] = down, np.array([self.gpos[0], self.gpos[1], 440.0])
+            ys, xs = np.mgrid[226:254, 306:334]
+            return [argparse.Namespace(xs=xs.ravel(), ys=ys.ravel(), height_mm=4.0)], info
+    flat = Flat()
+    taken = asyncio.run(lying_at(flat, (300.0, 250.0), "good"))
+    assert len(taken) and np.hypot(*(taken - place_grid((300.0, 250.0)).mean(axis=0)).T).min() < 15, taken
+
+    class Tape(Flat):        # tape marking the spot: 1 mm high, never a part
+        async def look(self, tag, closeups=True):
+            objs, info = await Flat.look(self, tag, closeups)
+            objs[0].height_mm = 1.0
+            return objs, info
+    assert not len(asyncio.run(lying_at(Tape(), (300.0, 250.0), "good")))
+
+    class Far(Fake):         # a place beyond reach at carrying height: approached lower, left in one slanted line
+        def __init__(self):
+            super().__init__()
+            self.args.good_xy, self.scan_g, self.path = [370.0, 465.0], np.array([336.0, 14.0, 353.0]), []
+
+        async def move_gripper(self, xyz, theta, what, linear=False, gate=False):
+            self.path.append((what, np.array(xyz, float)))
+            self.gpos = np.array(xyz, float)
+    far = Far()
+    asyncio.run(deliver(far, dict(part, size=(80.0, 25.0, 20.0)), []))
+    setting = [p for what, p in far.path if not what.startswith("good: camera")]      # the Fake camera sits at the gripper
+    assert far.moves == [[370, 465, 75]] and all(reachable(p) for p in setting), far.path
+    assert setting[0][2] < far.scan_g[2] and setting[-1].tolist() == far.scan_g.tolist(), far.path
     # End to end through the detector: a 60 x 55 x 12 mm block on a flat table, camera 440 mm straight above.
-    K = Intrinsics(600.0, 600.0, 320.0, 240.0, 640, 480)
     depth = np.full((480, 640), 440.0)
     depth[200:275, 280:362] = 428.0                   # 82 x 75 px at 428 mm = 58 x 53 mm
     objs, _ = detect_depth(depth, K)

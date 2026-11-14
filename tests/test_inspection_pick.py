@@ -33,14 +33,26 @@ def test_ambiguous_or_missing_target_refuses():
             match_target(target(),objects,640,settings())
 
 
-@pytest.mark.parametrize('decision,expected_xy',[('box',[300,250]),('reject',[400,0])])
-def test_accept_places_good_reject_returns_to_original(decision,expected_xy):
-    st=FakeStation(settings());skip=[]
+@pytest.mark.parametrize('decision,reject_xy,expected_xy',[('box',settings()['reject_xy'],settings()['good_xy']),
+                                                          ('reject',settings()['reject_xy'],settings()['reject_xy']),
+                                                          ('reject',None,[400,0])])
+def test_accept_places_good_reject_goes_to_reject_area_or_back(decision,reject_xy,expected_xy):
+    st=FakeStation(dict(settings(),reject_xy=reject_xy));skip=[]
     result=dict(status='held',decision=decision,xy=np.array([400.,0.]),grasp_z=69.)
     asyncio.run(execute_result(st,result,skip))
     releases=[a['open_at'] for a in st.actions if 'open_at' in a]
     assert len(releases)==1 and releases[0][:2]==expected_xy
     assert len(skip)==1
+
+
+def test_next_run_does_not_place_on_top_of_parts_already_there():
+    table=[];spots=[]
+    for _ in range(3):  # three runs: each station is new, the parts stay on the table
+        st=FakeStation(settings());st.lying=table
+        asyncio.run(execute_result(st,dict(status='held',decision='box',xy=np.array([400.,0.]),grasp_z=69.,
+                                           size=(20.,20.,20.)),[]))
+        spots+=[a['open_at'][:2] for a in st.actions if 'open_at' in a]
+    assert len(spots)==3 and min(np.hypot(*np.subtract(a,b)) for i,a in enumerate(spots) for b in spots[:i])>=28
 
 
 def test_hold_does_not_release_or_place():

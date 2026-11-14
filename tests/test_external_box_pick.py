@@ -37,8 +37,8 @@ def test_original_verdicts_each_processed_once_without_second_inference(tmp_path
             assert [r['status'] for r in report['objects']]==['held','held','hold']
             first,second,_=report['objects']
             releases=lambda r:[a['open_at'] for a in r['simulated_actions'] if 'open_at' in a]
-            assert releases(first)[0][:2]==[300,250]
-            assert releases(second)[0][:2]==second['binding']['table_point_world_mm'][:2]
+            assert releases(first)[0][:2]==batch.settings['good_xy']
+            assert releases(second)[0][:2]==batch.settings['reject_xy']  # reject area, other end of the table
             assert sum('simulated_pick' in a for r in [first,second] for a in r['simulated_actions'])==2
     asyncio.run(exercise())
 

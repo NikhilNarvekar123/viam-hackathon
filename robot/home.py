@@ -7,7 +7,7 @@ from robot.viam_hw import connect, disconnect, load_credentials
 async def replay_home(arm, switch, settings):
     speed=float(settings['speed_deg_s'])
     acceleration=float(settings['acceleration_deg_s2'])
-    if not 0<speed<=10 or not 0<acceleration<=30:
+    if not 0<speed<=80 or not 0<acceleration<=80:
         raise ValueError('Invalid conservative homing speed/acceleration')
     saved=await switch.do_command({'cfg':True})
     joints=saved.get('joints')

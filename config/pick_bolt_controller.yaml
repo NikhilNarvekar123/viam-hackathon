@@ -15,9 +15,11 @@ PAUSE_S: 0.25
 GO_HOME_FIRST: true
 BOX_HINT_XY: null
 GOOD_XY:
-- 300
-- 250
-REJECT_XY: null
+- 290
+- 330
+REJECT_XY:  # other end of the table from GOOD_XY; its places grow toward -y
+- 290
+- -350
 HOLD_XY: null
 ANOMALY_SERVICE: null
 ANOMALY_REJECT: 0.5
@@ -106,13 +108,20 @@ BODY_CLEAR_MM: 80.0
 CAM_CLEAR_MM: 65.0
 SPOT_KEEPOUT_MM: 150.0
 PLACE_PITCH_MM: 35.0
+PLACE_COLS: 5  # along +x, toward the end of the table
+PLACE_ROWS: 2  # toward the side: the wall-side obstacle starts at y=450
+PLACE_GAP_MM: 8.0
+JAW_SWEEP_MM: 55.0
+JAW_PAD_MM: 20.0
+PLACE_CARRY_MIN_Z: 200.0
+TAPE_MAX_MM: 2.0
 BOLT_LYING_MIN_H: 6.0
 BOLT_LYING_MAX_H: 40.0
 BOLT_LYING_MIN_LEN: 25.0
 BOLT_LYING_MIN_ASPECT: 1.7
 BOLT_LYING_MAX_W: 45.0
 GRIP_MAX_SPAN_MM: 70.0
-GRIP_MIN_H_MM: 5.5
+GRIP_MIN_H_MM: 3.0  # was 5.5: flat parts (washers, flat nuts) were refused
 MAX_OBJECT_LEN: 110.0
 MIN_AREA_MM2: 20.0
 MAX_AREA_MM2: 4000.0

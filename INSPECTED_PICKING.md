@@ -58,9 +58,10 @@ Standalone `pick_bolt.py` motion remains disabled to avoid its accept-all stub;
    persists across batches; object IDs/bindings do not.
 
 Original clearance refusals still apply. Measured height can be noisy; tallest-first
-ordering does not guarantee clearance. Accepted tall objects move to GOOD, but
-rejected tall objects return to their original spots and can still block later
-picks. `pick_order: input` restores original crop order. No neural inference or
+ordering does not guarantee clearance. Accepted objects move to the GOOD area and
+rejected objects to the reject area (`reject_xy`; `null` returns them to their
+original spots, where tall ones can still block later picks). Before each set-down
+the wrist camera checks the area for free places. `pick_order: input` restores original crop order. No neural inference or
 whole-scene consistency check is added during ROI refinement. Stale batches expire at the
 configured age limit; the source verdict must not follow a rearranged scene.
 This is not robust object tracking or a personnel-safety system.
