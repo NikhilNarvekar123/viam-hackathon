@@ -96,6 +96,10 @@ def automatic_crops(image, settings):
         obj['crop_bbox_xyxy']=[left,top,left+side,top+side]
         obj['crop_side_px']=side
         obj['crop_padding_outside_frame']=bool(left<0 or top<0 or left+side>image.width or top+side>image.height)
+    # A crop that would leave the frame is never padded (extraction refuses it): skip that part this batch
+    # instead of aborting the whole batch. It is picked once it has been moved, or from another view.
+    for obj in [o for o in accepted if o['crop_padding_outside_frame']]:
+        obj['warnings'].append('crop_crosses_frame');accepted.remove(obj);rejected.append(obj)
     for index,obj in enumerate(accepted,1): obj['id']=index
     result['objects']=accepted
     result['rejected_candidates']=rejected
