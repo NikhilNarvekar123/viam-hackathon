@@ -7,7 +7,6 @@ from PIL import Image
 
 from anomaly.detector import select_device
 from core.types import Decision, Detection, Frame
-from vlm.overlay import build_overlay
 from vlm.parse import parse_decision
 from vlm.prompt import build_prompt
 
@@ -48,8 +47,7 @@ class OpenVINODecider:
         self.generation_config.max_new_tokens = limit
         self.generation_config.do_sample = False
         self.generation_config.num_beams = 1
-        warmup = build_overlay(Image.new("RGB", (size, size)), None,
-                               **settings["overlay"])
+        warmup = Image.new("RGB", (size, size))
         self._generate(warmup)  # Warm once at startup; no per-item pipeline reload.
 
     def _generate(self, image: Image.Image) -> str:
@@ -70,7 +68,7 @@ class OpenVINODecider:
     def decide(self, frame: Frame, detection: Detection) -> Decision:
         start = perf_counter()
         try:
-            image = build_overlay(frame.image, detection.heatmap, **self.settings["overlay"])
+            image = frame.image.convert('RGB').copy()  # Heatmaps are review artifacts only.
             raw = self._generate(image)
             return parse_decision(raw, self.allowed_actions)
         finally:

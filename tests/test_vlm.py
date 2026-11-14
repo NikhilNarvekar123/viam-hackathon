@@ -146,7 +146,7 @@ def test_mocked_genai_warmup_greedy_and_parsing(config, tmp_path, monkeypatch, r
     frame = Frame("test", Image.new("RGB", (4, 3)))
     decision = decider.decide(frame, Detection(0.9, True, np.ones((3, 4))))
     assert decision.raw_output == raw and decision.valid is valid and decision.action == "reject"
-    assert tensors[-1].shape == (1, 3, 8, 3) and tensors[-1].dtype == np.uint8
+    assert tensors[-1].shape == (1, 3, 4, 3) and tensors[-1].dtype == np.uint8
     assert pipeline.generate.call_count == 2
     constructor.assert_called_once()
     assert decider.last_latency_ms >= 0

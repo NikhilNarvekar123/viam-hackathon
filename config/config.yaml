@@ -1,7 +1,9 @@
-wrist_inspection_config: config/wrist_inspection.yaml
 # Simulation placeholders, not hardware calibration.
 # --fake selects fakes; no --fake explicitly selects real_backend.
 # Real mode never moves without --confirm-motion. Stub models remain the default.
+# Step 1, camera-only counting. Reference must match the fixed overview viewpoint.
+wrist_inspection_config: config/wrist_inspection.yaml
+vlm_service_config: config/vlm_service.yaml
 overview:
   cycle_delay_s: 2.0
   camera_name: overview-cam

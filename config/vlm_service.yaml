@@ -1,0 +1,30 @@
+# Local VLM inspection; no arm/gripper commands.
+# Paused after Viam request-backlog timeouts (not a model-token quota).
+# Re-enable explicitly after checking service health; escalated objects remain HOLD.
+enabled: false
+service_name: mainVLM
+camera_name: cam
+crop_config: config/wrist_inspection.yaml
+request_timeout_s: 120
+max_new_tokens: 128
+image_size_px: 224
+stage1_fast_pass: true
+routing_policy: vlm_authoritative
+response_schema: grounded_inspection
+# Per-request prompt; no anomaly score, heatmap or annotation is supplied.
+prompt: >-
+  Examine this close-up image of a single metal fastener. In one short sentence
+  (observation), describe the surface material, color, and condition across the
+  fastener's head, shaft, and edges. A normal fastener is made entirely of clean,
+  bare, uniform metal. Set defect: true if any foreign material, non-metallic wrap,
+  coating, discoloration, corrosion, debris, or physical deformation is present
+  anywhere on the fastener; set defect: false only if the entire fastener is clean,
+  bare, undamaged metal.
+  Other detected objects were replaced with tabletop background; ignore those fill edges.
+  Return ONLY JSON with exactly two fields, in this order: observation, defect.
+  observation must be a short sentence; defect must be a JSON boolean, not a string.
+action_to_destination:
+  accept: box
+  reject: reject_bin
+  hold: hold_area
+output_dir: logs/vlm_test

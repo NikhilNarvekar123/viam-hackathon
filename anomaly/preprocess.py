@@ -8,8 +8,17 @@ from robot.viam_hw import crop_image
 def prepare_image(image: Image.Image, image_size: int, roi=None) -> Image.Image:
     if not isinstance(image_size, int) or image_size < 1:
         raise ValueError("image_size must be a positive integer")
-    return crop_image(image.convert("RGB"), roi).resize(
-        (image_size, image_size), Image.Resampling.BILINEAR)
+    image = crop_image(image.convert("RGB"), roi)
+    if image.width != image.height:
+        # Preserve geometry for manual ROIs too; automatic crops are already square.
+        pixels = np.asarray(image)
+        border = np.concatenate([pixels[0], pixels[-1], pixels[:, 0], pixels[:, -1]])
+        color = tuple(np.median(border, axis=0).astype(np.uint8).tolist())
+        side = max(image.size)
+        square = Image.new("RGB", (side, side), color)
+        square.paste(image, ((side-image.width)//2, (side-image.height)//2))
+        image = square
+    return image.resize((image_size, image_size), Image.Resampling.BILINEAR)
 
 
 def image_tensor(image: Image.Image, settings: dict) -> np.ndarray:

@@ -1,7 +1,7 @@
 # Viam Fastener Inspection Hackathon
 
-Work-in-progress fastener inspection/sorting project for Robot Hackathon: Edge of
-Intelligence, Track 3: Spot it, sort it. Tape and marker marks represent defects.
+Work-in-progress local fastener inspection for Robot Hackathon: Edge of Intelligence,
+Track 3: Spot it, sort it. **Model accuracy and autonomous sorting are not validated.**
 
 ## Current pipeline
 
@@ -9,93 +9,130 @@ The default `main.py` loop repeats until Ctrl+C:
 
 1. Reach/verify the organizer's saved `home-pose`.
 2. Fully open the gripper and verify its reported position.
-3. Capture `overview-cam`, detect/count candidate objects, and save annotations.
-4. Capture wrist camera `cam`, automatically crop candidate objects, and run the
-   local OpenVINO anomaly model. Save scores, heatmaps, and overlays.
-5. Wait the configured interval and repeat with fresh images.
+3. Capture `overview-cam` and count candidate objects.
+4. Capture wrist camera `cam`, detect contours, isolate square object crops, and run
+   the local OpenVINO Anomalib model once per candidate.
+5. Scores **below 0.75** route to GOOD; other candidates escalate to the VLM stage.
+   **VLM is disabled by default in this snapshot**, so escalated candidates remain
+   HOLD. No VLM connection or inference is made while disabled.
+6. Save frame, crops, scores, heatmaps and routing decisions; wait and repeat.
 
-The model is compiled once per run. Current inference device is CPU; GPU/NPU
-benchmarking is pending. Initial anomaly threshold is 0.4. Scores are not probabilities.
-VLM decisions, cross-camera object matching, and physical sorting are **not**
-integrated into this loop. Wrist/overview IDs are independent and frame-local.
+The anomaly model is compiled once per run on CPU. The optional Stage 2 service is
+Viam `mainVLM`, running Qwen2.5-VL-7B-Instruct INT4 locally through OpenVINO GenAI on
+Intel GPU. The configured prompt checks surface condition, foreign material and
+physical damage, returning ordered `observation` and boolean `defect` fields.
+Valid true -> REJECT; valid false -> GOOD; invalid/error responses -> HOLD.
 
-## Safe quick start (no robot or model required)
+**Decisions are logged only: this loop does not execute picking or sorting.**
+Overview/wrist IDs are independent and frame-local. A GOOD decision is a model
+output, not a verified ground-truth label. The 0.75 threshold is an operating choice,
+not a validated calibration. Both false positives and false accepts have occurred.
+
+## Image and model contract
+
+- Segmentation thresholds use a canonical 640x480 resolution. Border, texture and
+  fragment filters reduce false candidates; touching objects can still merge.
+- Centered square crop side:
+  `max(int(36*w/640), int(max(bbox_width,bbox_height)*1.45))`.
+- Other detected contours, including interior holes, are filled with median tabletop
+  color after four-reference-pixel dilation. Target pixels are protected.
+- Boundary-crossing square windows stop inspection rather than adding an outer pad.
+- Automatic crop sharpening is **disabled** after comparison showed no separation
+  benefit. A noise-gated Gaussian unsharp helper remains for controlled experiments.
+- Anomalib: RGB /255, float32 NCHW `[1,3,128,128]`. The current export embeds resize
+  to 256x256 and ImageNet normalization. Shape/dtype mismatches are rejected rather
+  than hidden by reshaping the model. Check your own export before using this setup.
+- VLM: the isolated crop is resized to 224x224 with OpenCV `INTER_LANCZOS4`, then
+  encoded as lossless PNG. No heatmap, annotation or anomaly score is supplied.
+  Upsampling does not recover detail missing from the original capture.
+- Scores/maps may be normalized and clamped by the export. A score of 1 is not a
+  probability and does not imply every pixel in the anomaly map is saturated.
+
+## Safe quick start — no robot or weights required
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install numpy pillow pyyaml pytest python-dotenv
+pip install numpy pillow opencv-python-headless pyyaml pytest python-dotenv viam-sdk
 python main.py --fake --n 2
 pytest
 ```
 
-Fake mode uses synthetic scenes and stub anomaly scores, NOT real model inference.
-Omit `--n` for a continuous loop. Legacy simulation remains available via:
-
-```bash
-python main.py --stage sort --fake --n 10
-```
+Fake mode uses synthetic scenes and stub inference, NOT real model predictions.
+Legacy sorting simulation remains available with `python main.py --stage sort --fake --n 10`.
 
 ## Hardware setup
 
-In a separate project environment, install `viam-sdk` and `openvino`. Tested on the
-NUC with Python 3.12, viam-sdk 0.85.2, and OpenVINO 2026.4.1.
-Copy `.env.example` to `.env` and enter your own credentials. Configure resource
-names in `config/config.yaml` and `config/wrist_inspection.yaml`.
+Keep a separate project environment; preserve organizer environments and `/opt/viam`.
+Install OpenVINO for real anomaly inference. Full `requirements.txt` also includes
+training and local GenAI dependencies; it is not the lightweight fake-only install.
+Tested hardware environment: Python 3.12, viam-sdk 0.85.2, OpenVINO 2026.4.1.
 
-The repository excludes all runtime data. Supply:
-- An empty-table overview reference at the configured `overview.background` path,
-  captured with the current fixed camera viewpoint, lighting, and exposure.
-- Your OpenVINO `.xml`/`.bin` model pair under `models/`. Update the model path.
-  The team's v2 export expects float32 RGB NCHW 1x3x128x128, returning pred_score
-  and anomaly_map. Current external preprocessing is RGB / 255; confirm the full
-  preprocessing contract with the trainer.
-- An organizer-configured `home-pose` switch implementing
-  `erh:vmodutils:arm-position-saver`, plus arm and gripper resources.
+Copy `.env.example` to `.env` and supply your own credentials. Review resource names
+and paths in `config/config.yaml`, `config/wrist_inspection.yaml`, and
+`config/vlm_service.yaml`. Supply privately:
 
-After setup, with the workspace clear, competing teleop stopped and emergency stop
-available, a supervised one-cycle run is:
+- An empty-table overview reference at the configured path, with matching viewpoint
+  and lighting.
+- Your OpenVINO `.xml`/`.bin` anomaly export under `models/`.
+- An organizer `home-pose` switch (`erh:vmodutils:arm-position-saver`), arm and gripper.
+- For Stage 2: a configured local Viam vision service and downloaded Qwen model.
+  Set `enabled: true` only after checking service health and validating behavior.
+
+With a clear workspace, no competing controller, and emergency-stop access:
 
 ```bash
 python main.py --confirm-motion --n 1
 ```
 
-This DOES move the arm home and open the gripper. The organizer switch replays
-joints directly when no motion service is configured on it; it is not guaranteed
-collision-planned. The script requests 5 deg/s speed and 10 deg/s² acceleration.
-It never uses the placeholder project poses for this default home stage.
-Omit `--n` for continuous operation. Live mode refuses to skip homing; fake and
-offline overview analysis remain available. Errors exit rather than advancing.
+**This can move the arm home and opens the gripper.** Home replay may use direct
+joint motion rather than collision planning. Requests use 5 deg/s speed and
+10 deg/s² acceleration. Validate the saved home/path first. Default live mode does
+not use the placeholder project poses and will not skip mandatory home verification.
+Omit `--n` for continuous operation. Errors stop the loop.
 
-## Standalone tools
+## Saved-frame diagnostics — no motion
 
-- `tools/inspect_wrist.py`: wrist capture/inference, automatic or manual ROI crops,
-  offline images, and preview-only capture.
-- `tools/locate.py`: overview background subtraction, crops, and pixel coordinates.
-- `tools/capture.py`: camera-only capture helper.
-- `tools/gripper_demo.py`: fake-by-default gripper open/close/open demo.
-- `tools/overview_hover.py`: **experimental** provisional overview-to-robot mapping
-  and hover planning. A physical test was reported to land in the wrong place.
-  Treat this path as unvalidated and do NOT use it for unattended motion.
+```bash
+python tools/replay_wrist.py --image /path/to/frame.png
+python tools/inspect_anomaly_tensors.py --image /path/to/frame.png
+python tools/ablate_anomaly.py --image /path/to/frame.png
+python tools/diagnose_anomaly.py --labels /path/to/labels.json
+# Optional explicit reference images; no dataset or ground-truth labels are embedded:
+python tools/diagnose_anomaly.py --sample /path/to/reference.png --labels /path/to/labels.json
+```
 
-## Limitations and safety
+`replay_wrist.py --vlm` invokes the decision stage, which still honors `enabled: false`.
+The tensor inspector records direct exported tensors before heatmap visualization.
+The ablation tool compares masking/sharpening combinations. Diagnostic output stays
+under gitignored `logs/`; calibration proposals never overwrite config automatically.
 
-- Automated cropping/counting is heuristic: shadows/clutter can be false positives;
-  touching objects can merge, and large/boundary candidates may be rejected.
-- Live accuracy is not established; real captures have produced false positives.
-  V2 and the 0.4 threshold need labeled validation, not just successful inference.
-- The overview mapping is provisional. Its calibration artifacts are excluded,
-  and the main loop does NOT use it to move toward objects.
-- `config/poses.json` contains placeholders. Do not execute the legacy real sorter
-  until all poses, paths and model settings have been independently validated.
-- Model collision checks are not personnel-safety systems. Add/rearrange parts only
-  during a safe paused/loading phase. Do not run competing controllers.
-- Logs/images accumulate each cycle; monitor disk space during long runs.
+Other tools:
+- `tools/inspect_wrist.py`: camera capture/preview or offline inference, automatic/manual ROIs.
+- `tools/test_vlm.py`: standalone inspection using the same gating and routing as main.
+- `tools/locate.py` / `tools/capture.py`: pixel localization and camera-only capture.
+- `tools/gripper_demo.py`: fake-by-default gripper demo with explicit motion opt-in.
+- `tools/overview_hover.py`: **experimental, unvalidated** mapping and hover planning;
+  a physical test went to the wrong location. Not used by the main loop.
 
-174 tests passed on the NUC at this snapshot. Tests are primarily synthetic/mocked;
-model loading/inference was also tested on saved images. A finished autonomous
+## Safety and limitations
+
+- VLM and anomaly accuracy remain unvalidated across representative parts/views.
+  Clean and defective anomaly scores can overlap; do not hide this by threshold tuning.
+- Large/boundary/low-texture candidates may be excluded; clutter may still be counted.
+- `config/poses.json` contains placeholders. Do not run the legacy real sorter with them.
+- Model collision checks are not personnel-safety systems. Add parts only during safe
+  paused/loading windows. Never run competing motion controllers.
+- A browser's live vision polling can accumulate outstanding Viam requests and hit
+  concurrency limits. This is not a local model token quota. Stop excess polling
+  and investigate service responsiveness rather than blindly increasing timeouts.
+- Monitor disk space; per-cycle image artifacts accumulate.
+
+**247 tests passed** for this snapshot. Tests are primarily synthetic/mocked; real
+OpenVINO inference and Viam integration were tested separately. A finished autonomous
 inspection-and-sorting robot is not claimed.
 
 See [NUC_START.md](NUC_START.md), [LOCALIZATION.md](LOCALIZATION.md), and
-[OVERVIEW_HOVER.md](OVERVIEW_HOVER.md). Credentials, weights, images, calibration
-captures, logs, virtual environments, and private Git history are excluded.
+[OVERVIEW_HOVER.md](OVERVIEW_HOVER.md). This sanitized public snapshot excludes
+credentials, weights, images, labels/calibration artifacts, runtime logs, virtual
+environments, and private Git history.

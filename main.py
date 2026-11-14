@@ -1,4 +1,4 @@
-"""Continuous home -> overview -> wrist anomaly loop; sorting remains separate scaffolding."""
+"""Continuous home -> overview -> wrist Anomalib -> VLM decisions; no integrated sorting yet."""
 import argparse
 import asyncio
 from datetime import datetime, timezone
@@ -122,14 +122,20 @@ async def run_overview_loop(config, fake=False, confirm_motion=False, cycles=Non
         print(f"Cycle {index}: {observation['candidate_count']} candidates", flush=True)
         if inspector is not None:
             wrist = await inspector.capture_and_inspect()
+            decisions = None
+            if config.get('vlm_service_config'):
+                from vlm.service import decide_wrist_objects
+                vlm_settings = yaml.safe_load((ROOT / config['vlm_service_config']).read_text())
+                decisions = await decide_wrist_objects(wrist, vlm_settings, ROOT, fake=fake)
             cycle_report = {'cycle': index, 'overview_output': observation.get('output_dir'),
                             'overview_count': observation['candidate_count'],
                             'wrist_output': wrist['output_dir'],
                             'wrist_count': wrist['candidate_count'],
                             'wrist_anomalous_count': wrist['anomalous_count'],
-                            'cross_camera_object_matching': False}
+                            'cross_camera_object_matching': False,
+                            'vlm_decisions': decisions, 'sorting_executed': False}
             (Path(wrist['output_dir']) / 'cycle.json').write_text(json.dumps(cycle_report, indent=2) + '\n')
-        # Future stages: match/select -> decide -> sort -> verify.
+        # Future stages: select -> controller handoff -> sort -> verify.
         # Wrist and overview IDs are NOT associated. Do not infer correspondence.
         # Do not carry frame-local IDs or targets into the next cycle.
         if cycles is None or index < cycles:

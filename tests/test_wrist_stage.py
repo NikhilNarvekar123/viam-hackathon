@@ -16,7 +16,7 @@ def settings():
 
 
 def test_process_manual_crop_and_threshold(tmp_path):
-    cfg=settings();cfg['rois']=[[0,0,16,16]]
+    cfg=settings();cfg['rois']=[[0,0,16,16]];cfg['model']['threshold']=0.4
     detector=SimpleNamespace(device='mock',detect=Mock(return_value=SimpleNamespace(score=0.4,heatmap=np.zeros((16,16)))))
     stage=WristInspector(cfg,tmp_path,detector=detector)
     result=stage.process(Image.new('RGB',(32,32),'gray'))
