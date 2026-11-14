@@ -22,6 +22,8 @@ def route_decision(anomaly, vlm, destinations, policy='disagreement_hold'):
 async def decide_wrist_objects(wrist, settings, root, fake=False):
     folder=Path(wrist['output_dir'])
     records=[];machine=None;service=None;status=None
+    # Blue tape decides alone, except while a voice-confirmed inspection policy is active: that goes to the VLM.
+    color_only=bool(settings.get('color_only')) and not settings.get('inspection_policy')
     error=None if settings.get('enabled',True) else 'VLM disabled by configuration; manual review required'
     destinations=settings['action_to_destination']
     if set(destinations)!={'accept','reject','hold'}:
@@ -31,7 +33,7 @@ async def decide_wrist_objects(wrist, settings, root, fake=False):
     draw=ImageDraw.Draw(annotated)
     try:
         if (any(not stage1_pass(o,settings) for o in wrist['objects']) and not fake and error is None
-                and not settings.get('color_only')):
+                and not color_only):
             try:
                 from viam.services.vision import VisionClient
                 machine=await connect(load_credentials(root/'.env'))
@@ -57,7 +59,7 @@ async def decide_wrist_objects(wrist, settings, root, fake=False):
                 vlm=dict(action='reject',defect_type='colored_tape_paint_or_marker',valid=True,skipped=True,
                          reason=f'Color check: {colored} strongly colored pixels; VLM not called',
                          raw_answer=None,device='cpu',latency_ms=0)
-            elif settings.get('color_only'):
+            elif color_only:
                 passed=True  # the color check is the whole decision: no blue tape -> accept
                 vlm=dict(action=None,defect_type=None,reason='No blue tape: accept (color-only rule); VLM not called',
                          valid=False,skipped=True,raw_answer=None,device=None,latency_ms=0)
@@ -79,7 +81,7 @@ async def decide_wrist_objects(wrist, settings, root, fake=False):
             routing=(dict(final_action='reject',destination=destinations['reject'],routing_reason='Color check')
                      if color_reject else
                      dict(final_action='accept',destination=destinations['accept'],
-                          routing_reason='No blue tape (color-only rule)' if settings.get('color_only')
+                          routing_reason='No blue tape (color-only rule)' if color_only
                           else 'Stage 1 score below operating threshold') if passed else
                      route_decision(anomaly,vlm,destinations,settings.get('routing_policy','disagreement_hold')))
             routing['colored_pixels']=colored
