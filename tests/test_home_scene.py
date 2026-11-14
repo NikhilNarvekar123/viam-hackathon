@@ -92,7 +92,7 @@ def test_reject_return_unchanged_is_retained_but_displaced_return_resets():
 
 def test_unstable_pair_is_uncertain():
     scene,rgb,_=fixture()
-    moved=rgb.copy();moved[80:90,110:120]=20
+    moved=rgb.copy();moved[80:100,110:130]=20  # 400 px: more than the calibrated camera noise
     assert scene.check(Image.fromarray(rgb),Image.fromarray(moved))['reason']=='home_view_not_stable'
 
 
@@ -106,7 +106,7 @@ def test_unrelated_reference_is_not_updated_allowing_gradual_changes_to_disappea
     scene,rgb,_=fixture()
     rgb[80:90,110:120]=140
     assert check(scene,rgb)['status']=='unchanged'
-    rgb[80:90,110:120]=120
+    rgb[80:90,110:120]=100  # 60 levels: past the calibrated difference threshold
     assert check(scene,rgb)['status']=='changed'
 
 
