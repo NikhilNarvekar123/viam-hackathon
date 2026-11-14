@@ -22,11 +22,11 @@ def normalize_transcript(text):
 
 
 def parse_voice_command(raw_text):
-    """Whole utterances only: never turn 'do not start' or 'stop then start' into start."""
+    """Whole utterances only: require robot/robo for hello/start/stop; standalone for dance/new_policy."""
     if not isinstance(raw_text, str) or len(raw_text) > 2048:
         return None
     text = raw_text.strip()
-    policy = re.fullmatch(r'(?:robot[,\s]+)?(?:please\s+)?new\s+polic(?:y|ies)\b\s*[:.,-]?\s*(.+)',
+    policy = re.fullmatch(r'(?:please\s+)?new\s+polic(?:y|ies)\b\s*[:.,-]?\s*(.+)',
                           text, flags=re.IGNORECASE | re.DOTALL)
     if policy:
         rule = policy.group(1).lstrip(' \t:.,-').strip()
@@ -34,10 +34,15 @@ def parse_voice_command(raw_text):
             return dict(command='new_policy', policy=rule, raw_text=text)
         return None
     norm = normalize_transcript(text)
-    if re.fullmatch(r'(?:robot )?(?:please stop|stop please)', norm):
-        return dict(command='stop', raw_text=text)
-    match = re.fullmatch(r'(?:robot )?(?:please )?(hello|start|dance)(?: please)?', norm)
-    return dict(command=match.group(1), raw_text=text) if match else None
+    if re.fullmatch(r'(?:please )?dance(?: please)?', norm):
+        return dict(command='dance', raw_text=text)
+    match = re.fullmatch(
+        r'(?:(?:robot|robo) (?:please )?(hello|start|stop)|(?:please )?(hello|start|stop) (?:robot|robo))(?: please)?',
+        norm,
+    )
+    if match:
+        return dict(command=match.group(1) or match.group(2), raw_text=text)
+    return None
 
 
 def voice_runtime_settings(config):
