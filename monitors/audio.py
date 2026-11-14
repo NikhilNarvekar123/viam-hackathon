@@ -65,7 +65,7 @@ def _load_whisper_pipeline(settings: dict, root: Path):
 
     pipe = genai.WhisperPipeline(str(model_dir), device, CACHE_DIR=str(cache_dir))
     gen_cfg = pipe.get_generation_config()
-    gen_cfg.max_new_tokens = int(settings.get("max_new_tokens", 32))
+    gen_cfg.max_new_tokens = int(settings.get("max_new_tokens", 96))
     if hasattr(gen_cfg, "language"):
         gen_cfg.language = str(settings.get("language", "<|en|>"))
     if hasattr(gen_cfg, "task"):
@@ -80,7 +80,7 @@ async def _listen_loop(context: ProducerContext, root: Path):
     settings = context.settings
     mic_name = str(settings.get("mic_name", "microphone-3"))
     step_s = float(settings.get("step_seconds", 1.0))
-    window_s = float(settings.get("window_seconds", 3.5))
+    window_s = float(settings.get("window_seconds", 12.0))
     rms_threshold = float(settings.get("rms_threshold", 400.0))
     cooldown_s = float(settings.get("cooldown_s", 1.5))
     debug_print = bool(settings.get("print_transcripts", True))
