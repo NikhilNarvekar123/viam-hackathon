@@ -128,3 +128,93 @@ def test_expired_batch_does_not_pick(tmp_path):
             assert result['objects'][0]['status']=='batch_expired'
             assert batch.st.actions==[]
     asyncio.run(exercise())
+
+
+def test_reset_before_first_pick_discards_all_pending_targets(tmp_path):
+    from core.runtime_events import EventRuntime
+    config,inspector=setup(tmp_path)
+    runtime=EventRuntime(config['runtime_events'])
+    async def exercise():
+        async with ExternalBoxBatch(tmp_path,config,fake=True) as batch:
+            await batch.capture_and_inspect(inspector)
+            runtime.publish('reset_batch','audio')
+            report=await batch.execute([{'id':1,'final_action':'accept'}],runtime.checkpoint)
+            assert report['status']=='reset_requested'
+            assert report['objects']==[] and batch.st.actions==[]
+            assert report['pending_crop_ids']==[1,2,3]
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize('kind',['reset_batch','scene_changed'])
+def test_reset_during_delivery_waits_for_return_before_discarding_remaining(tmp_path,kind):
+    from core.runtime_events import EventRuntime
+    from robot.inspection_pick import execute_result
+    config,inspector=setup(tmp_path)
+    runtime=EventRuntime(config['runtime_events'])
+    phase='ready';checkpoints=[]
+    def checkpoint():
+        assert phase!='delivering'
+        checkpoints.append(phase)
+        return runtime.checkpoint()
+    async def delivery(st,result,skip):
+        nonlocal phase
+        phase='delivering'
+        runtime.publish(kind,'test')
+        await asyncio.sleep(0)
+        out=await execute_result(st,result,skip)
+        phase='delivered'
+        return out
+    async def exercise():
+        async with ExternalBoxBatch(tmp_path,config,fake=True) as batch:
+            await batch.capture_and_inspect(inspector)
+            with patch('robot.external_box_pick.execute_result',side_effect=delivery):
+                report=await batch.execute([{'id':1,'final_action':'reject'},
+                                            {'id':2,'final_action':'accept'}],checkpoint)
+            assert checkpoints==['ready','delivered']
+            assert report['status']=='reset_requested' and report['pending_crop_ids']==[2,3]
+            first,=report['objects']
+            assert first['crop_id']==1
+            release=next(a['open_at'] for a in first['simulated_actions'] if 'open_at' in a)
+            assert release[:2]==first['binding']['table_point_world_mm'][:2]
+    asyncio.run(exercise())
+
+
+def test_checkpoint_after_holds_and_last_attempt_without_retrying(tmp_path):
+    from core.runtime_events import EventRuntime
+    config,inspector=setup(tmp_path)
+    runtime=EventRuntime(config['runtime_events']);calls=[]
+    def checkpoint():
+        calls.append(True)
+        if len(calls)==4:runtime.publish('scene_changed','overview')
+        return runtime.checkpoint()
+    async def exercise():
+        async with ExternalBoxBatch(tmp_path,config,fake=True) as batch:
+            await batch.capture_and_inspect(inspector)
+            report=await batch.execute([],checkpoint)
+            assert len(calls)==4
+            assert [r['status'] for r in report['objects']]==['hold']*3
+            assert report['status']=='reset_requested' and report['pending_crop_ids']==[]
+            assert batch.st.actions==[]
+    asyncio.run(exercise())
+
+
+def test_delivery_failure_propagates_without_processing_reset_or_next_pick(tmp_path):
+    from core.runtime_events import EventRuntime
+    config,inspector=setup(tmp_path)
+    runtime=EventRuntime(config['runtime_events']);calls=[]
+    def checkpoint():
+        calls.append(True)
+        return runtime.checkpoint()
+    async def delivery(*args):
+        runtime.publish('reset_batch','audio')
+        raise ValueError('delivery failed; may still hold object')
+    async def exercise():
+        async with ExternalBoxBatch(tmp_path,config,fake=True) as batch:
+            await batch.capture_and_inspect(inspector)
+            with patch('robot.external_box_pick.execute_result',side_effect=delivery):
+                with pytest.raises(ValueError,match='delivery failed'):
+                    await batch.execute([{'id':1,'final_action':'accept'}],checkpoint)
+            assert len(calls)==1
+            assert runtime.checkpoint().reset_requested
+            assert not any('open_at' in a for a in batch.st.actions)
+    asyncio.run(exercise())

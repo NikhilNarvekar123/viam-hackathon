@@ -22,13 +22,13 @@ from robot.inspection_pick import IntegratedStation,FakeStation,setup_good_desti
 from robot.viam_hw import load_credentials
 
 
-async def run_external_box_batch(config,root,inspector,fake,confirm_motion,state):
+async def run_external_box_batch(config,root,inspector,fake,confirm_motion,state,checkpoint=None):
     from vlm.service import decide_wrist_objects
     async with ExternalBoxBatch(root,config,fake,confirm_motion,state) as batch:
         wrist=await batch.capture_and_inspect(inspector)
         settings=yaml.safe_load((Path(root)/config['vlm_service_config']).read_text())
         decisions=await decide_wrist_objects(wrist,settings,root,fake=fake)
-        report=await batch.execute(decisions)
+        report=await batch.execute(decisions,checkpoint=checkpoint)
         return wrist,decisions,report
 
 
@@ -131,7 +131,7 @@ class ExternalBoxBatch:
         print(f"Pipeline boxes: {sum(r['status']=='matched' for r in self.rows)}/{len(self.rows)} localized from supplied ROIs; no reclassification.",flush=True)
         return self.wrist
 
-    async def execute(self,decisions):
+    async def execute(self,decisions,checkpoint=None):
         if self.wrist is None:raise ValueError('No shared batch capture')
         by_id={d['id']:d for d in decisions}
         if len(by_id)!=len(decisions):raise ValueError('Duplicate decision IDs')
@@ -144,9 +144,22 @@ class ExternalBoxBatch:
         save()
         order=self.settings.get('pick_order','tallest_first')
         if order not in ('tallest_first','input'):raise ValueError('Invalid pick_order')
-        rows=self.rows if order=='input' else sorted(self.rows,key=lambda r:-float(r.get('height_mm',0.)))
+        pending=list(self.rows)
         report['pick_order']=order
-        for binding in rows:
+        while True:
+            # Replan remaining work only; no new inference or geometry assumptions.
+            if order=='tallest_first':pending.sort(key=lambda r:-float(r.get('height_mm',0.)))
+            # Before the first target AND after each attempt/delivery (including the last).
+            # Nothing consumes events between grasp and delivery/return.
+            if checkpoint is not None:
+                signal=checkpoint()
+                report.setdefault('runtime_events',[]).extend(asdict(e) for e in signal.events)
+                if signal.reset_requested:
+                    report.update(status='reset_requested',pending_crop_ids=[r['crop_id'] for r in pending])
+                    save()
+                    return report
+            if not pending:break
+            binding=pending.pop(0)  # HOLD/refused/returned rejects are not retried this batch.
             ident=binding['crop_id'];decision=by_id.get(ident,{})
             action=decision.get('final_action','hold')
             entry=dict(crop_id=ident,action=action,binding=binding,status='pending',sorting_executed=False)

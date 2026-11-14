@@ -7,6 +7,15 @@ vlm_service_config: config/vlm_service.yaml
 pick_bolt_config: config/pick_bolt.yaml
 pick_after_inspection: true
 pick_target_source: pipeline  # pipeline: original boxes/verdicts, whole batch; picker: own selection/reclassification
+runtime_events:
+  enabled: false  # Opt-in scaffold; existing pipeline behavior is unchanged by default.
+  queue_capacity: 64
+  idle_poll_s: 0.1
+  join_timeout_s: 2.0
+  reset_events: [reset_batch, scene_changed]
+  producers:
+    audio: {enabled: false}     # Inert hook until the audio adapter is implemented.
+    overview: {enabled: false}  # Inert hook until change detection is implemented.
 overview:
   # Live cycles wait for explicit ENTER after inspection; fake mode stays noninteractive.
   pause_between_cycles: true

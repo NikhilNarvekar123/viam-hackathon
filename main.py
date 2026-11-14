@@ -1,4 +1,4 @@
-"""Continuous home -> overview -> wrist Anomalib -> VLM decisions; no integrated sorting yet."""
+"""Home -> overview -> wrist inspection -> planned batch picking, with optional event hooks."""
 import argparse
 import asyncio
 from datetime import datetime, timezone
@@ -132,7 +132,15 @@ async def wait_for_next_cycle(sorting_executed=False):
 
 
 async def run_overview_loop(config, fake=False, confirm_motion=False, cycles=None, image_path=None,
-                            pause_between_cycles=None, inspect_only=False):
+                            pause_between_cycles=None, inspect_only=False, event_runtime=None):
+    from core.runtime_events import managed_runtime
+    with managed_runtime(config.get('runtime_events',{}),event_runtime,fake=fake) as runtime:
+        await _run_overview_loop(config,fake,confirm_motion,cycles,image_path,
+                                 pause_between_cycles,inspect_only,runtime)
+
+
+async def _run_overview_loop(config, fake=False, confirm_motion=False, cycles=None, image_path=None,
+                             pause_between_cycles=None, inspect_only=False, event_runtime=None):
     from robot.overview import overview_stage
 
     delay = float(config['overview'].get('cycle_delay_s', 2.0))
@@ -153,6 +161,8 @@ async def run_overview_loop(config, fake=False, confirm_motion=False, cycles=Non
     target_source=config.get('pick_target_source','picker')
     if target_source not in ('pipeline','picker'):raise ValueError('pick_target_source must be pipeline or picker')
     external_boxes=picking and target_source=='pipeline'
+    if event_runtime is not None and not external_boxes:
+        raise ValueError('Runtime events currently require the pipeline-box main picking mode')
     pick_bridge=None;pick_state={}
     inspector = None
     if config.get('wrist_inspection_config') and image_path is None:
@@ -167,6 +177,8 @@ async def run_overview_loop(config, fake=False, confirm_motion=False, cycles=Non
         if not external_boxes:pick_bridge=InspectionBridge(ROOT,config,pick_settings,fake,inspector=inspector)
     index = 0
     while cycles is None or index < cycles:
+        # Requests already present are satisfied by the fresh capture below; faults still abort.
+        if event_runtime is not None:event_runtime.checkpoint()
         index += 1
         pick_report=None
         if picking:
@@ -181,7 +193,8 @@ async def run_overview_loop(config, fake=False, confirm_motion=False, cycles=Non
         if inspector is not None:
             if external_boxes:
                 from robot.external_box_pick import run_external_box_batch
-                wrist,decisions,pick_report=await run_external_box_batch(config,ROOT,inspector,fake,confirm_motion,pick_state)
+                options={'checkpoint':event_runtime.checkpoint} if event_runtime is not None else {}
+                wrist,decisions,pick_report=await run_external_box_batch(config,ROOT,inspector,fake,confirm_motion,pick_state,**options)
             else:
                 wrist = await inspector.capture_and_inspect()
                 decisions = None
@@ -208,6 +221,9 @@ async def run_overview_loop(config, fake=False, confirm_motion=False, cycles=Non
                 cycle_report['sorting_executed']=pick_report['sorting_executed']
             (Path(wrist['output_dir']) / 'cycle.json').write_text(json.dumps(cycle_report, indent=2) + '\n')
         if pick_report and pick_report.get('status')=='capacity': break
+        reset_requested=bool(pick_report and pick_report.get('status')=='reset_requested')
+        if reset_requested:
+            print('Reset requested: pending batch discarded; next cycle recaptures and reinspects.',flush=True)
         # Wrist and overview IDs are NOT associated. Do not infer correspondence.
         # Do not carry frame-local IDs or targets into the next cycle.
         if cycles is None or index < cycles:
@@ -215,6 +231,11 @@ async def run_overview_loop(config, fake=False, confirm_motion=False, cycles=Non
                 if picking:
                     if not await wait_for_next_cycle(sorting_executed=True): break
                 elif not await wait_for_next_cycle(): break
+            elif event_runtime is not None:
+                if not reset_requested:
+                    print('IDLE — batch exhausted, not necessarily an empty table; waiting for a reset event.',flush=True)
+                    await event_runtime.wait_for_reset()
+                # A reset starts fresh, but never bypasses the live operator-pause gate above.
             else:
                 await asyncio.sleep(delay)
 
