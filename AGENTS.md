@@ -1,5 +1,12 @@
 # AGENTS.md
 
+## Repository identity — verify before editing
+
+- The canonical GitHub repository for this pipeline is **https://github.com/NikhilNarvekar123/viam-hackathon** (HTTPS `.git` and equivalent SSH URLs are acceptable).
+- Before editing, committing, deploying, or pushing, check `git rev-parse --show-toplevel`, `git remote -v`, and `git status --short`. Work in a verified `viam-hackathon` checkout; a folder named `viam` is not proof of repository identity. Do not publish to `NikhilNarvekar123/viam`.
+- Older development/deployment directories can contain newer copied files despite an old Git HEAD or a legacy remote. Resolve mismatches with the user; preserve those files and compare hashes before migration. Never silently repoint remotes or reset/clean/pull over a dirty deployment.
+- Coordinate shared-file changes with the audio workstream. Use isolated branches/worktrees, preserve their work, and commit only explicitly reviewed paths. Private diagnostic/handoff documents, images, models, credentials, and raw machine logs must not be swept into commits.
+
 ## Project
 
 Entry for Viam's "Robot Hackathon: Edge of Intelligence", Track 3: **Spot it, sort it**.

@@ -4,7 +4,10 @@ This is a small extension to the supplied-ROI batch pipeline, not a replacement
 controller. `main.py` still owns orchestration; the original picker still owns
 its grasp/refinement/delivery logic. No speech model, camera change detector,
 secondary scene-matching algorithm, new device placement, or safety-stop system
-is implemented here. Nothing has been deployed or physically validated.
+is implemented here. This runtime scaffold was deployed from source `9fd2589`
+and fake-tested on the NUC; physical event-enabled behavior is not validated.
+Listeners remain disabled. The separate CPU overview comparison/replay primitive
+is offline-only, not a live producer; see `monitors/OVERVIEW_DETECTION.md`.
 
 ## Flow
 
