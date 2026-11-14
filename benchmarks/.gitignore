@@ -1,0 +1,11 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+*.bak
+state.json
+cpu_reference.*
+CPU_*/
+GPU_*/
+NPU_*/
+VLM_GPU_*/
+VLM_NPU_*/
