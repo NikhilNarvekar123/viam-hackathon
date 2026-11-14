@@ -20,9 +20,10 @@ def scene(height=3.):
 
 
 def test_low_roi_localizes_without_any_detector_proposals_but_needs_closeup():
-    K,mask,info,crop,settings=scene(2.)  # below GRIP_MIN_H_MM
+    low=picker.GRIP_MIN_H_MM-.5  # just below the configured gripper minimum
+    K,mask,info,crop,settings=scene(low)
     rows=bind_rois([crop],mask,info,K,np.eye(3),np.zeros(3),settings)
-    assert rows[0]['status']=='matched' and rows[0]['height_mm']==2.
+    assert rows[0]['status']=='matched' and rows[0]['height_mm']==low
     obj,_,_=measure_roi(crop,mask,info,K,settings)
     assert 'too low' in validate_grasp_target(obj)
 
