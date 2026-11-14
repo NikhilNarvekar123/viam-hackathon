@@ -1,0 +1,12 @@
+# Initial association gates for read-only evaluation, NOT validated calibration.
+min_foreground_overlap: 0.4
+max_center_distance_px: 12.0  # reference width 640
+max_capture_s: 15.0
+max_joint_change_deg: 0.2
+# Direct ROI geometry: no independent depth proposal / 12-pixel matching prerequisite.
+roi_min_valid_pixels: 12
+roi_min_valid_fraction: 0.3
+roi_height_percentile: 95.0
+roi_projection_margin_px: 6.0
+roi_color_difference: 25
+roi_saturation_difference: 40

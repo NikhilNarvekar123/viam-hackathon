@@ -126,8 +126,18 @@ def filled_contour(mask):
     return (np.asarray(padded)[1:-1,1:-1]!=128)
 
 
-def extract_candidate_crops(image, result, mask):
-    """Keep target contour; replace only OTHER foreground contours, not rectangles."""
+def extract_candidate_crops(image, result, mask, *, object_indices=None):
+    """Extract requested targets, retaining ALL candidates for neighbor masking.
+
+    By default extract every candidate. Selected extraction still refuses any
+    requested out-of-frame window; unrelated boundary crops need not be extracted.
+    """
+    requested=result['objects']
+    if object_indices is not None:
+        indices=list(object_indices)
+        if any(type(i) is not int or not 0<=i<len(requested) for i in indices):
+            raise ValueError('Invalid candidate crop index')
+        requested=[requested[i] for i in indices]
     image=image.convert('RGB');pixels=np.asarray(image)
     labels=np.zeros(mask.shape,dtype=np.int32)
     centers=[]
@@ -144,7 +154,7 @@ def extract_candidate_crops(image, result, mask):
     detected_labels={target_label(obj) for obj in result['objects']}
     filled={label:filled_contour(labels==label) for label in detected_labels}
     crops=[]
-    for obj in result['objects']:
+    for obj in requested:
         l,t,r,b=obj['crop_bbox_xyxy'];cx,cy=obj['center_uv']
         if l<0 or t<0 or r>image.width or b>image.height:
             raise ValueError('Centered inspection crop crosses frame boundary; reposition target. No padded inference permitted.')

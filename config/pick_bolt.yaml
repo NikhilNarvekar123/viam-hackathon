@@ -1,0 +1,23 @@
+# Opt-in only: main.py --stage pick --confirm-motion. Not physically validated by this integration.
+good_xy: [300.0, 250.0]  # Teammate's existing destination, retained at user's request.
+reject_xy: null          # REJECT is picked, then returned to the original grasp location.
+hold_xy: null            # Inspection errors/HOLD leave the item unpicked.
+max_good_places: 12      # Stop before exceeding the controller's three-column/four-row place area.
+mapping_config: config/crop_target_mapping.yaml
+pick_order: tallest_first  # input also supported. Rejected items are still returned, not cleared away.
+target_match_radius_mm: 15.0  # Bind fresh picker/refinement detections to the supplied target only.
+max_batch_age_s: 300.0       # Keep the scene unchanged until the entire batch finishes.
+max_frame_age_s: 30.0
+match_center_distance_px: 12.0  # reference 640px image width
+match_min_overlap: 0.25
+frames: 4
+close_up: auto  # Existing picker rule: refine nuts/standing parts; eligible long bolts may go directly.
+record_hz: 0.0           # Do not change station-wide data capture settings.
+resources:
+  arm: arm
+  gripper: gripper
+  camera: cam
+  motion: builtin
+  teleop: teleop
+# Motion geometry/clearance/planning rules are inherited from the teammate controller.
+# Destination and physical clearance must be supervised before routine use.

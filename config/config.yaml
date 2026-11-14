@@ -4,7 +4,12 @@
 # Step 1, camera-only counting. Reference must match the fixed overview viewpoint.
 wrist_inspection_config: config/wrist_inspection.yaml
 vlm_service_config: config/vlm_service.yaml
+pick_bolt_config: config/pick_bolt.yaml
+pick_after_inspection: true
+pick_target_source: pipeline  # pipeline: original boxes/verdicts, whole batch; picker: own selection/reclassification
 overview:
+  # Live cycles wait for explicit ENTER after inspection; fake mode stays noninteractive.
+  pause_between_cycles: true
   cycle_delay_s: 2.0
   camera_name: overview-cam
   background: data/overview_empty_overhead.png

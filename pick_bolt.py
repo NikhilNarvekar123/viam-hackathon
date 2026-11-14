@@ -4,7 +4,12 @@ pick_bolt.py - find a bolt on the table with the wrist camera and pick it up.
 
 Station: armfarm22 (xArm6 `arm`, `gripper`, wrist RealSense `cam`, motion service `builtin`).
 
-RUN IN THE VIAM APP (machine page -> CODE tab -> Python):
+REPOSITORY INTEGRATION: standalone execution is READ-ONLY. Use
+    python main.py --stage pick --confirm-motion
+for classified picking. The upstream instructions/modes below are retained as
+reference, not enabled standalone motion entrypoints in this checkout.
+
+UPSTREAM: RUN IN THE VIAM APP (machine page -> CODE tab -> Python):
     Paste this whole file over main.py, set MODE below, press Run. Output appears in CONSOLE.
     The sandbox supplies the machine address and API key itself. There are no prompts there:
     MODE is the safety gate, and every move is announced a few seconds before it starts.
@@ -40,9 +45,10 @@ E-stop. Stopping this script does not stop a move that is already running: use t
 button or the E-stop.
 """
 # ====================================================================================================
-# SETTINGS - edit here when running in the Viam app. Terminal flags override them.
+# UPSTREAM REFERENCE DEFAULTS. Active values are loaded from config/pick_bolt_controller.yaml below.
+# Do not tune these copies: edit the config file instead.
 # ====================================================================================================
-MODE = "sort"              # "look" | "hover" | "pick" | "box" | "sort" | "watch" (watch: terminal only)
+MODE = "look"              # "look" | "hover" | "pick" | "box" | "sort" | "watch" (watch: terminal only)
 PICK_KINDS = ("bolt-standing", "bolt-lying", "nut", "object")   # what counts as pickable; biggest part goes first.
                            # "object": anything else raised that the jaws can take. Remove it to pick fasteners only
 CLOSE_UP = "auto"          # "auto": long lying bolts are grasped straight from the scan (faster); nuts and standing
@@ -154,19 +160,22 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-try:
-    import numpy as np
-except ImportError:   # the app sandbox may ship without it
-    import subprocess
-    print("numpy is not installed here; installing it (one time) ...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "numpy"])
-    import numpy as np
+import numpy as np  # Dependencies must be installed explicitly; never auto-install at import.
 try:
     if os.environ.get("PICK_BOLT_NO_CV2"):
         raise ImportError
     import cv2   # optional: adds flat/no-depth blobs and an annotated image
 except ImportError:
     cv2 = None
+
+# Preserve the upstream references above, but configuration owns all active settings.
+from pathlib import Path
+import yaml
+_controller_keys = {name for name in globals() if name.isupper()}
+_controller_settings = yaml.safe_load((Path(__file__).resolve().parent / 'config/pick_bolt_controller.yaml').read_text())
+if set(_controller_settings) != _controller_keys:
+    raise ValueError('Controller configuration keys must match the imported controller settings')
+globals().update(_controller_settings)
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -969,6 +978,7 @@ class Station:
         self.jaws_open = False    # known open? saves an open() per part
         self.current = None       # the part being worked on, for recovery after a failed move
         self.vision = None        # anomaly vision service, if configured
+        self.inspection_handler = None  # integrated pipeline: classify this exact target before grasp
         self.placed = {"box": 0, "reject": 0, "hold": 0}
         self.theta = NATURAL_THETA   # gripper theta of the last finished move
         self.released_at = None      # when the gripper last let go of a part
@@ -1066,8 +1076,10 @@ class Station:
         bgr = None
         if cv2 is not None and color:
             images, _ = await self.cam.get_images()
-            color = next((i for i in images if "dep" not in str(i.mime_type).lower()), None)
-            bgr = None if color is None else cv2.imdecode(np.frombuffer(color.data, np.uint8), cv2.IMREAD_COLOR)
+            from robot.viam_hw import decode_color, select_image
+            rgb = decode_color(select_image(images))
+            bgr = np.asarray(rgb.convert('RGB'))[:, :, ::-1].copy()
+        self.capture_monotonic = time.monotonic()
         depths, gray_img, in_frame, data = [], None, 1.0, b""
         for _ in range(max(1, frames or self.args.frames)):
             data, _ = await self.cam.get_point_cloud()
@@ -1090,6 +1102,8 @@ class Station:
         depth, gray_img, bgr, depths, summary, in_frame = await self.capture(CLOSE_FRAMES if tag == "refine" else None)
         objs, info = detect_depth(depth, self.K, bgr, gray_img)
         info["in_frame"], info["seen_at"] = in_frame, time.time()
+        info['bgr'] = bgr
+        info['capture_monotonic'] = self.capture_monotonic
         info["R"], info["t"] = await self.cam_frame()      # camera pose once per look; everything else is math
         cam_w, foot_w = info["t"], info["R"] @ info["foot"] + info["t"]
         info["table_z"] = float(foot_w[2])
@@ -1263,7 +1277,8 @@ async def find_box(st: Station) -> bool:
     return True
 
 
-async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool = False, guard=None) -> dict:
+async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool = False, guard=None,
+                   target_world_xy=None, target_tolerance_mm=None, roi_target=None) -> dict:
     """One part: look, choose, (close-up,) grasp, lift. stop_at is 'look', 'hover' or 'pick'.
     Returns dict(status=none|out|look|lost|refused|hover|held|missed|hand, ...).
     Watch mode passes force_close_up and guard(objs, info, tag): called on the scan look before anything
@@ -1276,8 +1291,22 @@ async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool =
             print(f"\nHand rule: {why}. Not moving.")
             return dict(status="hand", why=why)
     cands = [o for o in objs if o.kind in PICK_KINDS]
+    if roi_target is not None:
+        try:cands=[roi_target(info)]
+        except ValueError as exc:
+            return dict(status='target_unmatched',xy=np.asarray(target_world_xy),why=str(exc))
+        from robot.roi_pick_target import validate_approach_target
+        refusal=validate_approach_target(cands[0])
+        if refusal:return dict(status='refused',xy=np.asarray(target_world_xy),why=refusal)
     if args.index is not None:
         cands = [o for o in objs if o.idx == args.index]
+    if target_world_xy is not None:
+        if target_tolerance_mm is None or not math.isfinite(target_tolerance_mm) or target_tolerance_mm<=0:
+            raise ValueError('External target requires a positive matching tolerance')
+        cands=[o for o in cands if np.linalg.norm(st.locate(o,info)[0][:2]-target_world_xy)<=target_tolerance_mm]
+        if len(cands)!=1:
+            return dict(status='target_unmatched',xy=np.asarray(target_world_xy),
+                        why=f'External target has {len(cands)} scan matches; no arbitrary substitution')
     target = base = None
     for o in sorted(cands, key=lambda o: -o.area_mm2):     # biggest first: easiest to see and to hold
         b, axis_deg = st.locate(o, info)
@@ -1329,13 +1358,21 @@ async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool =
     out["first_motion_at"] = time.time()
     # A long lying bolt is measured well enough from the scan height; going straight in saves a move and a look.
     # (Not with an anomaly model: that needs the close-up view of every part.)
-    direct = (not force_close_up and args.close_up == "auto" and stop_at == "pick" and args.index is None and st.vision is None
+    direct = (roi_target is None and not force_close_up and args.close_up == "auto" and stop_at == "pick" and args.index is None and st.vision is None
               and target.kind == "bolt-lying" and target.length_mm >= 40 and target.height_mm is not None)
     if not direct:
         # ---- close-up from straight above ----
         cam_goal = [base[0], base[1], TABLE_Z_EXPECTED + REFINE_HEIGHT_MM]
         await st.move_gripper(st.gripper_xyz_for_camera(cam_goal), NATURAL_THETA, "camera above the part", gate=not st.box)
         objs, info = await st.look("refine", closeups=not st.box)
+        if roi_target is not None:
+            try:objs=[roi_target(info)]
+            except ValueError as exc:return dict(out,status='target_unmatched',why=str(exc))
+            from robot.roi_pick_target import validate_grasp_target
+            refusal=validate_grasp_target(objs[0])
+            if refusal:
+                print(refusal+'. Not grasping.')
+                return dict(out,status='refused',why=refusal)
         if guard is not None:
             why = guard(objs, info, "refine")
             if why:
@@ -1343,6 +1380,10 @@ async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool =
                 return dict(out, status="hand", why=why)
         off_center = lambda o: math.hypot(o.u - st.K.cx, o.v - st.K.cy)  # noqa: E731
         near = [o for o in objs if not o.kind.startswith("rejected") and off_center(o) < 90]
+        if target_world_xy is not None:
+            near=[o for o in near if np.linalg.norm(st.locate(o,info)[0][:2]-target_world_xy)<=target_tolerance_mm]
+            if len([o for o in near if o.kind in PICK_KINDS])>1:
+                return dict(out,status='target_unmatched',why='Ambiguous external target at close-up')
         if not near:
             print("Lost the part in the close-up. Not grasping.")
             return dict(out, status="lost")
@@ -1363,7 +1404,7 @@ async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool =
                 return dict(out, status="lost")
         base, axis_deg = st.locate(target, info)
     # Jaw direction and fingertip height come from the measured size, not from what the part was called.
-    plan = grasp_plan(target.length_mm, target.width_mm, target.height_mm, upright=scan_plan[1],
+    plan = grasp_plan(target.length_mm, target.width_mm, target.height_mm, upright=scan_plan[1] if roi_target is None else False,
                       tip_clearance_mm=args.tip_clearance_mm)
     if plan is None:
         print(f"Close-up measures {target.length_mm:.0f} x {target.width_mm:.0f} mm: does not fit the open jaws "
@@ -1394,7 +1435,10 @@ async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool =
           f"(gripper frame z={grasp_z:.0f}, tip offset {args.tip_offset_mm:.0f})")
 
     # ---- decide where it goes, while the camera can still see it (it cannot see a part in the jaws) ----
-    out["decision"], out["anomaly"], out["confidence"] = await decide(st, out)
+    out["decision"], out["anomaly"], out["confidence"] = await decide(st, out, target, info, objs)
+    if st.inspection_handler is not None and out['decision']=='hold':
+        print('Inspection HOLD: leave target unpicked; no grasp or delivery.')
+        return dict(out,status='inspection_hold')
     if out["anomaly"] is not None:
         print(f"Decision: {out['decision']} (anomaly score {out['anomaly']:.2f})")
 
@@ -1425,10 +1469,16 @@ async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool =
     return dict(out, status="held" if holding.is_holding_something else "missed")
 
 
-async def decide(st: Station, item: dict) -> Tuple[str, Optional[float], float]:
+async def decide(st: Station, item: dict, target=None, info=None, objects=None) -> Tuple[str, Optional[float], float]:
     """Where does this part go? Returns (decision, anomaly score or None, confidence 0..1).
     decision is "box", "reject" or "hold". Runs while the camera is over the part, before the grasp.
     With no anomaly service configured this is a stub: everything is "box"."""
+    handler=getattr(st,'inspection_handler',None)
+    if handler is not None:
+        result=await handler(st,item,target,info,objects)
+        if not isinstance(result,tuple) or len(result)!=3 or result[0] not in ('box','reject','hold'):
+            raise ValueError('Invalid integrated inspection result; refusing grasp')
+        return result
     if st.vision is None:
         return "box", None, float(item["score"])
     try:
@@ -1881,6 +1931,9 @@ class RunLog:
 
 async def run(args) -> int:
     moving = args.mode != "look"
+    if moving:
+        raise ValueError('Standalone motion is disabled: use main.py --stage pick --confirm-motion for classified picking')
+    args.record_hz=0  # Read-only standalone look must not toggle organizer data capture.
     print(f"pick_bolt: MODE={args.mode}" + ("  ** THE ARM WILL MOVE **" if moving else "  (no motion)"), flush=True)
     st = Station(args)
     await st.connect()

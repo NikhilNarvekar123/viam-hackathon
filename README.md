@@ -13,9 +13,12 @@ The default `main.py` loop repeats until Ctrl+C:
 4. Capture wrist camera `cam`, detect contours, isolate square object crops, and run
    the local OpenVINO Anomalib model once per candidate.
 5. Scores **below 0.75** route to GOOD; other candidates escalate to the VLM stage.
-   **VLM is disabled by default in this snapshot**, so escalated candidates remain
-   HOLD. No VLM connection or inference is made while disabled.
-6. Save frame, crops, scores, heatmaps and routing decisions; wait and repeat.
+   VLM is enabled in this snapshot; unavailable/invalid responses remain HOLD.
+6. Use supplied object ROIs and shared stationary RGB/depth to locate pickup targets.
+   Process the batch tallest measured height first, using the original verdicts:
+   ACCEPT → GOOD area; REJECT → pick up and return to the pickup location.
+   HOLD or unusable geometry → no grasp. No second neural classification pass.
+7. Save artifacts and pause for Enter after the complete batch.
 
 The anomaly model is compiled once per run on CPU. The optional Stage 2 service is
 Viam `mainVLM`, running Qwen2.5-VL-7B-Instruct INT4 locally through OpenVINO GenAI on
@@ -23,7 +26,10 @@ Intel GPU. The configured prompt checks surface condition, foreign material and
 physical damage, returning ordered `observation` and boolean `defect` fields.
 Valid true -> REJECT; valid false -> GOOD; invalid/error responses -> HOLD.
 
-**Decisions are logged only: this loop does not execute picking or sorting.**
+**The default live loop now attempts physical batch picking/sorting.**
+Use `--inspect-only` to suppress picking. `--n 1` means one complete batch, not one
+object. The latest direct-ROI/tallest-first update is offline-tested but has **not
+been deployed to the station or physically tested**. See [INSPECTED_PICKING.md](INSPECTED_PICKING.md).
 Overview/wrist IDs are independent and frame-local. A GOOD decision is a model
 output, not a verified ground-truth label. The 0.75 threshold is an operating choice,
 not a validated calibration. Both false positives and false accepts have occurred.
@@ -85,11 +91,13 @@ With a clear workspace, no competing controller, and emergency-stop access:
 python main.py --confirm-motion --n 1
 ```
 
-**This can move the arm home and opens the gripper.** Home replay may use direct
+**This homes/opens the gripper and can pick/place multiple objects.** Home replay may use direct
 joint motion rather than collision planning. Requests use 5 deg/s speed and
 10 deg/s² acceleration. Validate the saved home/path first. Default live mode does
 not use the placeholder project poses and will not skip mandatory home verification.
-Omit `--n` for continuous operation. Errors stop the loop.
+Omit `--n` for repeated batches with Enter between batches. Keep the scene unchanged
+within a batch and check/clear the GOOD area between batches. Errors stop the loop.
+`--pick-target-source picker` retains the older independent picker selection mode.
 
 ## Saved-frame diagnostics — no motion
 
@@ -102,7 +110,7 @@ python tools/diagnose_anomaly.py --labels /path/to/labels.json
 python tools/diagnose_anomaly.py --sample /path/to/reference.png --labels /path/to/labels.json
 ```
 
-`replay_wrist.py --vlm` invokes the decision stage, which still honors `enabled: false`.
+`replay_wrist.py --vlm` invokes the decision stage, honoring the configured enabled flag.
 The tensor inspector records direct exported tensors before heatmap visualization.
 The ablation tool compares masking/sharpening combinations. Diagnostic output stays
 under gitignored `logs/`; calibration proposals never overwrite config automatically.
@@ -128,7 +136,7 @@ Other tools:
   and investigate service responsiveness rather than blindly increasing timeouts.
 - Monitor disk space; per-cycle image artifacts accumulate.
 
-**247 tests passed** for this snapshot. Tests are primarily synthetic/mocked; real
+**297 tests passed** for this snapshot. Tests are primarily synthetic/mocked; real
 OpenVINO inference and Viam integration were tested separately. A finished autonomous
 inspection-and-sorting robot is not claimed.
 

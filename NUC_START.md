@@ -18,7 +18,7 @@ to create an isolated venv. Do not overwrite the organizer's ML environment.
 
 ## Hardware integration
 
-Install `openvino` in the project environment for real Anomalib inference. The Viam SDK is included above because integration tests also import it. The optional VLM service is disabled by default in `config/vlm_service.yaml`; flagged items remain HOLD until explicitly re-enabled.
+Install `openvino` in the project environment for real Anomalib inference. The Viam SDK is included above because integration tests also import it. The VLM service is enabled in `config/vlm_service.yaml`; confirm service availability before live use. Invalid/unavailable responses remain HOLD.
 Copy `.env.example` to `.env` and enter your own machine address and API credentials.
 Never commit credentials. The public snapshot contains none.
 
@@ -32,7 +32,7 @@ resource names for your station. Its output is image pixels, not robot targets.
 - All checked-in project poses are placeholders. Do not execute the legacy real
   sorter with them. The default loop instead uses the organizer home switch;
   validate that saved home/path before using --confirm-motion.
-- Automatic camera-to-robot calibration and scattered-object grasping are unfinished.
+- The default main loop now attempts whole-batch picking after inspection; `--n 1` means one batch. Use `--inspect-only` to suppress picking. See INSPECTED_PICKING.md. The latest direct-ROI/tallest-first changes have not been deployed to the station or physically validated.
 - The gripper demo is separate, fake by default, and requires explicit flags for
   jaw movement. Stop teleop and clear the gripper before any real test.
 - Use organizer-approved speeds, a clear workspace, and an accessible emergency stop.

@@ -1,7 +1,6 @@
 # Local VLM inspection; no arm/gripper commands.
-# Paused after Viam request-backlog timeouts (not a model-token quota).
-# Re-enable explicitly after checking service health; escalated objects remain HOLD.
-enabled: false
+# Re-enabled after service health/inference check. Avoid concurrent browser vision polling.
+enabled: true
 service_name: mainVLM
 camera_name: cam
 crop_config: config/wrist_inspection.yaml
