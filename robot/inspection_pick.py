@@ -165,6 +165,7 @@ class FakeStation:
     wherever something was let go (self.lying: share it to keep the fake table across stations)."""
     def __init__(self,settings):
         self.args=SimpleNamespace(good_xy=settings['good_xy'],reject_xy=settings['reject_xy'],hold_xy=None)
+        self.holding=True  # set False to simulate a part falling out of the jaws on the way
         self.gpos=np.array([400.,0.,350.]);self.scan_g=self.gpos.copy()
         self.K=picker.Intrinsics(600.,600.,320.,240.,640,480);self.lying=[]
         self.placed={'box':0,'reject':0,'hold':0};self.gripper=self;self.actions=[]
@@ -175,6 +176,7 @@ class FakeStation:
         self.actions.append(dict(open_at=self.gpos.tolist()));self.lying.append(self.gpos[:2].tolist())
     async def confirm(self,*args,**kwargs): pass
     async def go_scan(self,*args,**kwargs): self.gpos=self.scan_g.copy()
+    async def is_holding_something(self): return SimpleNamespace(is_holding_something=self.holding,meta=None)
     def gripper_xyz_for_camera(self,cam_xyz): return np.asarray(cam_xyz,float)
     async def look(self,tag,closeups=True):
         depth=np.full((480,640),440.)

@@ -139,3 +139,10 @@ def test_fake_pipeline_never_connects_or_loads_real_model(tmp_path):
         asyncio.run(run_pick_loop(config,tmp_path,fake=True,cycles=1))
     connect.assert_not_awaited();vlm_connect.assert_not_awaited();detector.assert_not_called()
     assert list((tmp_path/'logs/inspection_pick').glob('run_*/cycle_001.json'))
+
+
+def test_part_that_fell_on_the_way_is_reported_not_placed():
+    st=FakeStation(settings());st.holding=False
+    delivery=asyncio.run(execute_result(st,dict(status='held',decision='box',xy=np.array([400.,0.]),grasp_z=69.),[]))
+    assert delivery.startswith('dropped') and st.placed['box']==0
+    assert not any(a.get('what','').endswith(': lower') for a in st.actions)

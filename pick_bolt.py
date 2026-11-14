@@ -1721,10 +1721,16 @@ async def lying_at(st: Station, spot, what: str) -> np.ndarray:
     return np.vstack([seen] + low)
 
 
-async def set_down(st: Station, xy, z: float, what: str):
-    """Carry what is held (at the current height) over a table spot, lower it, let go, come back up."""
+async def set_down(st: Station, xy, z: float, what: str) -> bool:
+    """Carry what is held (at the current height) over a table spot, lower it, let go, come back up.
+    False if the part fell out of the jaws on the way: then nothing is lowered and the jaws stay shut."""
     theta = neutral_theta(xy[0], xy[1])
     carry_z = await carry_over(st, xy, theta, what)
+    if not (await st.gripper.is_holding_something()).is_holding_something:
+        print(f"  {what}: the part is no longer in the jaws: it fell on the way. Not lowering; the next look finds it.")
+        if carry_z < st.scan_g[2] - 2.0:
+            await st.move_gripper(st.scan_g, NATURAL_THETA, f"{what}: back to the scan pose", linear=True)
+        return False
     await st.move_gripper([xy[0], xy[1], z], theta, f"{what}: lower", linear=True)
     await st.confirm("open gripper", gate=False)
     await st.gripper.open()
@@ -1732,6 +1738,7 @@ async def set_down(st: Station, xy, z: float, what: str):
     await st.move_gripper([xy[0], xy[1], carry_z], theta, f"{what}: back up", linear=True)
     if carry_z < st.scan_g[2] - 2.0:     # too far out to rise in place: back to the scan pose in one slanted line
         await st.move_gripper(st.scan_g, NATURAL_THETA, f"{what}: back to the scan pose", linear=True)
+    return True
 
 
 async def deliver(st: Station, res: dict, skip: list) -> str:
@@ -1756,7 +1763,11 @@ async def deliver(st: Station, res: dict, skip: list) -> str:
         skip.append(res["xy"])
         await st.go_scan()
         return f"left in place ({name} spot full)"
-    await set_down(st, xy, res["grasp_z"] + 6.0, name)
+    if not await set_down(st, xy, res["grasp_z"] + 6.0, name):
+        await st.gripper.open()
+        st.jaws_open = True
+        await st.go_scan()
+        return f"dropped on the way to the {name} spot (not placed)"
     st.placed[dec] += 1
     skip.append(np.array(xy))               # and never pick it up again from there
     await st.go_scan()
@@ -2302,6 +2313,9 @@ def self_check():
         async def open(self):
             self.moves.append([round(float(c)) for c in self.gpos])
             self.lying.append(self.gpos[:2].copy())
+
+        async def is_holding_something(self):
+            return argparse.Namespace(is_holding_something=True, meta=None)
 
         async def confirm(self, what, gate=True):
             pass
