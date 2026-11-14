@@ -282,7 +282,8 @@ class ExternalBoxBatch:
                 if picker.reachable(above):
                     await self.st.move_gripper(above,picker.NATURAL_THETA,'camera above the target (scan height)',linear=True)
                 result=await picker.pick_one(self.st,'pick',[],target_world_xy=xy,
-                    target_tolerance_mm=self.settings['target_match_radius_mm'],roi_target=supplied_roi)
+                    target_tolerance_mm=self.settings['target_match_radius_mm'],roi_target=supplied_roi,
+                    target_height_mm=binding.get('height_mm'))
             entry.update(status=result['status'],why=result.get('why'),picker_decision=result.get('decision'),
                          picker_target_xy_mm=np.asarray(result['xy']).tolist() if result.get('xy') is not None else None)
             save()  # retain incomplete attempt if delivery subsequently fails

@@ -127,6 +127,7 @@ async def run_continuous(config, root, *, fake=False, confirm_motion=False,
     runtime_settings = voice_runtime_settings(config) if voice is not None else config.get('runtime_events',{})
     state = {}
     batches = 0
+    stalls = 0  # batches in a row that left parts behind and picked nothing
     with managed_runtime(runtime_settings, event_runtime, fake=fake) as runtime:
         def checkpoint():
             signal = runtime.checkpoint() if runtime is not None else Checkpoint((),False)
@@ -192,6 +193,15 @@ async def run_continuous(config, root, *, fake=False, confirm_motion=False,
                     return dict(status='capacity', batches=batches, state=state)
                 if report['status']=='reset_requested':
                     print('Continuous: discard pending targets; fresh home capture/inspection.',flush=True)
+                    await asyncio.sleep(settings['idle_poll_s'])
+                    continue
+                # Parts left behind (refused, unmatched, missed) are not retried within a batch. Look again right
+                # away instead of idling until a voice start: picking one part often frees its neighbours
+                # (a nut refused next to a standing screw). Bounded, so an unpickable part cannot loop forever.
+                left=[o for o in report.get('objects',[]) if o.get('status') in ('refused','target_unmatched','unmatched','missed')]
+                stalls=0 if any(o.get('status')=='held' for o in report.get('objects',[])) else stalls+1
+                if left and stalls<=int(settings.get('leftover_retries',3)):
+                    print(f'Continuous: {len(left)} part(s) left behind; fresh home capture/inspection.',flush=True)
                     await asyncio.sleep(settings['idle_poll_s'])
                     continue
                 print('Continuous: no pending targets; watching at home (not proof of empty table).',flush=True)

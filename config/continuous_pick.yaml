@@ -1,6 +1,7 @@
 # Opt-in --continuous only. Does not enable any audio/side-camera producer.
 # CPU image thresholds are conservative starting points, NOT physical validation.
 idle_poll_s: 2.0
+leftover_retries: 3  # fresh looks in a row that pick nothing before idling with parts left behind
 settle_s: 0.3
 sample_interval_s: 0.2
 capture_timeout_s: 10.0

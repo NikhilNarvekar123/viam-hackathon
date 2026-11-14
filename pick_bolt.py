@@ -154,6 +154,7 @@ TAPE_MAX_MM = 2.0              # blobs this flat (tape marking a spot, a cable) 
 SUMMIT_RADIUS_MM, SUMMIT_BAND_MM, SUMMIT_MIN_PX = 35.0, 6.0, 12
 STANDING_MIN_TOP_MM = 40.0     # a top this high is a standing part; lying parts here read 30 mm at most
 STANDING_AIM_MM = 25.0         # an external target is standing only if that top is this near its position
+STANDING_OWN_MM = 50.0         # depth smear this near a standing part's top is the part itself, not a tall neighbour
 TOP_CLEAR_MM = 25.0            # the open fingertips arrive at least this far above a standing part's top
 STANDING_BODY_CLEAR_MM = 83.0  # tallest standing part the gripper body clears with fingertips at STANDING_TIP_MM
 BOLT_LYING_MIN_H, BOLT_LYING_MAX_H = 6.0, 40.0
@@ -1362,7 +1363,7 @@ async def find_box(st: Station) -> bool:
 
 
 async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool = False, guard=None,
-                   target_world_xy=None, target_tolerance_mm=None, roi_target=None) -> dict:
+                   target_world_xy=None, target_tolerance_mm=None, roi_target=None, target_height_mm=None) -> dict:
     """One part: look, choose, (close-up,) grasp, lift. stop_at is 'look', 'hover' or 'pick'.
     Returns dict(status=none|out|look|lost|refused|hover|held|missed|hand, ...).
     Watch mode passes force_close_up and guard(objs, info, tag): called on the scan look before anything
@@ -1382,6 +1383,12 @@ async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool =
         if up is not None and up[1] >= STANDING_MIN_TOP_MM \
                 and np.linalg.norm(up[0] - np.asarray(target_world_xy)[:2]) <= STANDING_AIM_MM:
             return await pick_standing(st, stop_at, info, objs, up[0], up[1], up[2])
+        # A thin standing screw's top can give the scan too little depth to find (14 Nov: 72 mm screw, 'insufficient
+        # depth', then the nut next to it refused as 'too close to something tall'). The home capture measured it in
+        # 3D already: aim there.
+        if target_height_mm is not None and target_height_mm >= STANDING_MIN_TOP_MM:
+            print(f"  standing (from the home capture): {target_height_mm:.0f} mm tall at the target position")
+            return await pick_standing(st, stop_at, info, objs, np.asarray(target_world_xy, float)[:2], float(target_height_mm))
     cands = [o for o in objs if o.kind in PICK_KINDS]
     if roi_target is not None:
         try:cands=[roi_target(info)]
@@ -1588,7 +1595,7 @@ async def pick_standing(st: Station, stop_at: str, info: dict, objs: list, top_x
         if not lo <= val <= hi:
             print(f"Target {axis}={val:.0f} is outside the workspace {lo:.0f}..{hi:.0f}. Not moving.")
             return dict(out, status="out")
-    tall = blocked_by_tall(info, st.K, None, (x, y), theta, st.t_gc, own_radius_mm=SUMMIT_RADIUS_MM)
+    tall = blocked_by_tall(info, st.K, None, (x, y), theta, st.t_gc, own_radius_mm=STANDING_OWN_MM)
     near_box = st.box is not None and not clear_of_box(st.box["bbox"], (x, y), theta, st.t_gc)
     if tall is not None or near_box:
         print(f"Too close to {'the box' if near_box else f'something {tall:.0f} mm tall'}. Not approaching.")
@@ -2442,6 +2449,18 @@ def self_check():
             sys.stdout = out_
     jaws = np.array([math.sin(math.radians(res["theta"])), math.cos(math.radians(res["theta"]))])   # gripper y, jaws close along it
     assert res["status"] == "held" and abs(jaws[1]) > 0.99, res
+    # A thin standing screw whose top gives the scan no depth: the home capture's height still makes it a standing pick.
+    up_depth[:] = 440.0
+    thin = Upright()
+    with open(os.devnull, "w") as quiet:
+        out_, sys.stdout = sys.stdout, quiet
+        try:
+            res = asyncio.run(pick_one(thin, "pick", [], target_world_xy=np.array([390.0, 10.0]), target_tolerance_mm=15.0,
+                                       roi_target=lambda info: (_ for _ in ()).throw(ValueError("Insufficient ROI foreground")),
+                                       target_height_mm=72.0))
+        finally:
+            sys.stdout = out_
+    assert res["status"] == "held" and res["kind"] == "bolt-standing" and res["xy"].tolist() == [390.0, 10.0], res
     # End to end through the detector: a 60 x 55 x 12 mm block on a flat table, camera 440 mm straight above.
     depth = np.full((480, 640), 440.0)
     depth[200:275, 280:362] = 428.0                   # 82 x 75 px at 428 mm = 58 x 53 mm
