@@ -4,7 +4,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 from robot.viam_hw import connect, disconnect, load_credentials
 from tools.test_vlm import ask_crop
-from vlm.evidence import evidence, stage1_pass
+from vlm.evidence import colored_pixels, evidence, stage1_pass
 
 
 def route_decision(anomaly, vlm, destinations, policy='disagreement_hold'):
@@ -30,7 +30,8 @@ async def decide_wrist_objects(wrist, settings, root, fake=False):
     annotated=frame.copy()
     draw=ImageDraw.Draw(annotated)
     try:
-        if any(not stage1_pass(o,settings) for o in wrist['objects']) and not fake and error is None:
+        if (any(not stage1_pass(o,settings) for o in wrist['objects']) and not fake and error is None
+                and not settings.get('color_only')):
             try:
                 from viam.services.vision import VisionClient
                 machine=await connect(load_credentials(root/'.env'))
@@ -45,7 +46,22 @@ async def decide_wrist_objects(wrist, settings, root, fake=False):
         for anomaly in wrist['objects']:
             ident=anomaly['id']
             passed=stage1_pass(anomaly,settings)
-            if passed:
+            color=settings.get('color_check') or {}
+            colored=None
+            if color.get('enabled') and (folder/f'object_{ident:03d}.png').exists():
+                with Image.open(folder/f'object_{ident:03d}.png') as saved: colored=colored_pixels(saved,float(color['min_saturation']),color.get('hue_range'))
+            color_reject=colored is not None and colored>=int(color['min_pixels'])
+            if color_reject:
+                # Tape, paint or colored marker: a defect whatever Stage 1 or the VLM would say.
+                passed=False
+                vlm=dict(action='reject',defect_type='colored_tape_paint_or_marker',valid=True,skipped=True,
+                         reason=f'Color check: {colored} strongly colored pixels; VLM not called',
+                         raw_answer=None,device='cpu',latency_ms=0)
+            elif settings.get('color_only'):
+                passed=True  # the color check is the whole decision: no blue tape -> accept
+                vlm=dict(action=None,defect_type=None,reason='No blue tape: accept (color-only rule); VLM not called',
+                         valid=False,skipped=True,raw_answer=None,device=None,latency_ms=0)
+            elif passed:
                 vlm=dict(action=None,defect_type=None,reason='Stage 1 below threshold; VLM not called',
                          valid=False,skipped=True,raw_answer=None,device=None,latency_ms=0)
             elif fake or error:
@@ -60,9 +76,13 @@ async def decide_wrist_objects(wrist, settings, root, fake=False):
                                            settings.get('image_size_px'))
                 combined.save(folder/f'object_{ident:03d}_vlm_input.png')
                 vlm=await ask_crop(service,combined,question,settings)
-            routing=(dict(final_action='accept',destination=destinations['accept'],
-                          routing_reason='Stage 1 score below operating threshold') if passed else
+            routing=(dict(final_action='reject',destination=destinations['reject'],routing_reason='Color check')
+                     if color_reject else
+                     dict(final_action='accept',destination=destinations['accept'],
+                          routing_reason='No blue tape (color-only rule)' if settings.get('color_only')
+                          else 'Stage 1 score below operating threshold') if passed else
                      route_decision(anomaly,vlm,destinations,settings.get('routing_policy','disagreement_hold')))
+            routing['colored_pixels']=colored
             record=dict(id=ident,bbox_xyxy=anomaly['bbox_xyxy'],anomaly=anomaly,vlm=vlm,
                         vlm_image_type=None if passed or vlm.get('skipped') else 'neighbor_masked_square_resized',
                         routing_policy=settings.get('routing_policy','disagreement_hold'),

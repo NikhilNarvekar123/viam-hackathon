@@ -53,4 +53,4 @@ model:
   # User-selected Stage 1 operating threshold; not validated calibration.
   # Scores below threshold route directly to GOOD; >= threshold escalates to VLM.
   # Scores are not probabilities.
-  threshold: 0.60
+  threshold: 0.65

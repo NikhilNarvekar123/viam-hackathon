@@ -34,3 +34,13 @@ def evidence(crop, overlay, anomaly, prompt, image_size=None):
         pixels=cv2.resize(np.asarray(image),(image_size,image_size),interpolation=cv2.INTER_LANCZOS4)
         image=Image.fromarray(pixels)
     return image,question
+
+
+def colored_pixels(crop, min_saturation, hue_range=None):
+    """Strongly colored pixels in a crop (tape, paint, colored marker). Bare metal stays near gray even under the
+    wrist camera's teal tint: on 14 Nov taped parts had 370-1100 px above 0.4 saturation, clean parts 3 at most."""
+    hsv=np.asarray(crop.convert('RGB').convert('HSV'),dtype=np.float32)/255.0
+    hit=(hsv[...,1]>min_saturation)&(hsv[...,2]>0.15)
+    if hue_range is not None:  # hue as a fraction of the color wheel: blue tape reads about 0.58
+        hit&=(hsv[...,0]>=hue_range[0])&(hsv[...,0]<=hue_range[1])
+    return int(hit.sum())
