@@ -29,6 +29,7 @@ def setup(tmp_path):
     def say(text):
         nonlocal sequence
         sequence += 1
+        if text == 'stop':text = 'stop please'
         return runtime.publish('voice_command', 'audio', json.dumps(dict(
             parse_voice_command(text), sequence=sequence, heard_at=time.monotonic())))
     return config, settings, runtime, say
@@ -45,7 +46,7 @@ def decisions():
     return [dict(id=1, final_action='accept'), dict(id=2, final_action='reject'), dict(id=3, final_action='hold')]
 
 
-def test_initially_stopped_and_gestures_never_home_or_pick(tmp_path):
+def test_initially_stopped_and_gestures_never_start_picking(tmp_path):
     config, settings, runtime, say = setup(tmp_path)
     records = []
     log = VoiceControl.log
@@ -59,9 +60,9 @@ def test_initially_stopped_and_gestures_never_home_or_pick(tmp_path):
             await until(lambda: records)
             runtime.publish('audio_ready', 'audio')
             say('hello')
-            await until(lambda: any(e == 'gesture_placeholder' for e, _ in records))
+            await until(lambda: any(e == 'gesture_completed' for e, _ in records))
             say('dance')
-            await until(lambda: sum(e == 'gesture_placeholder' for e, _ in records) == 2)
+            await until(lambda: sum(e == 'gesture_completed' for e, _ in records) == 2)
             runtime.publish('scene_changed', 'overview')  # Cannot resume a voice-stopped loop.
             await asyncio.sleep(.02)
             stop.set()
@@ -76,11 +77,11 @@ def test_initially_stopped_and_gestures_never_home_or_pick(tmp_path):
          patch('robot.continuous_pick.decide_wrist_objects', new_callable=AsyncMock) as infer:
         asyncio.run(exercise())
     enter.assert_not_awaited();home.assert_not_awaited();infer.assert_not_awaited()
-    assert all(not fields['motion_enabled'] for event, fields in records if event == 'gesture_placeholder')
+    assert [fields['gesture'] for event, fields in records if event == 'gesture_completed'] == ['hello', 'dance']
 
 
 @pytest.mark.parametrize('utterance,ack', [
-    ('stop', 'stopped'), ('hello', 'gesture_placeholder'), ('dance', 'gesture_placeholder'),
+    ('stop', 'stopped'), ('hello', 'gesture_completed'), ('dance', 'gesture_completed'),
     ('new policy reject red parts', 'policy_pending'),
 ])
 def test_command_during_delivery_finishes_then_stays_stopped_until_fresh_start(tmp_path, utterance, ack):

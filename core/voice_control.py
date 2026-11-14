@@ -62,6 +62,9 @@ class VoiceControl:
         self.ready_after = math.inf
         self.paused = True
         self.pending_policy = None
+        self.pending_gesture = None
+        self.gesture_in_progress = False
+        self.gesture_cancel_requested = False
         self.active_policy = None
         self.policy_version = 0
         self.resume_after = -math.inf
@@ -69,7 +72,7 @@ class VoiceControl:
         folder = Path(root) / 'logs/voice'
         folder.mkdir(parents=True, exist_ok=True)
         self.log_path = folder / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ') + '.jsonl')
-        self.log('waiting', reason='Waiting for audio readiness and a fresh start; gestures are motion-disabled.')
+        self.log('waiting', reason='Waiting for audio readiness. Start picks; hello/dance request taught gestures.')
 
     def log(self, event, **fields):
         row = dict(event=event, time=datetime.now(timezone.utc).isoformat(),
@@ -122,9 +125,14 @@ class VoiceControl:
             if command != 'stop' and self.clock() - heard > self.max_age:
                 self.log('ignored', command=command, reason='Stale command; repeat it after acknowledgement')
                 continue
+            if command in ('hello', 'dance') and (not self.ready or self.gesture_in_progress
+                    or heard < self.ready_after or heard <= self.resume_after):
+                self.log('ignored', command=command, reason='Wait for audio readiness and any active gesture to finish')
+                continue
             if command == 'start':
-                if not self.ready or heard < self.ready_after or heard <= self.resume_after:
-                    self.log('ignored', command=command, reason='Say start AFTER ready/stop/policy/gesture acknowledgement')
+                if (not self.ready or heard < self.ready_after or heard <= self.resume_after
+                        or self.pending_gesture is not None or self.gesture_in_progress):
+                    self.log('ignored', command=command, reason='Say start AFTER ready/stop/policy acknowledgement or gesture completion')
                     continue
                 if self.pending_policy is not None:
                     self.active_policy = self.pending_policy
@@ -138,15 +146,38 @@ class VoiceControl:
                 self.paused = True
                 self.resume_after = self.clock()
                 reset = True
+                if command in ('stop', 'new_policy'):
+                    self.pending_gesture = None
+                    self.gesture_cancel_requested = self.gesture_in_progress
                 if command == 'new_policy':
                     self.pending_policy = parsed['policy']
                     self.log('policy_pending', policy=self.pending_policy, reason='Say start to confirm and inspect afresh')
                 elif command in ('hello', 'dance'):
-                    self.log('gesture_placeholder', gesture='wave' if command == 'hello' else 'left_right',
-                             motion_enabled=False, reason='No taught trajectory; remain stopped until start')
+                    self.pending_gesture = command
+                    self.log('gesture_requested', gesture=command,
+                             reason='Replay taught poses at empty-gripper safe boundary; stay stopped afterward')
                 else:
                     self.log('stopped', reason='Safe checkpoint reached; remain stopped until start')
         return reset
+
+    def begin_gesture(self):
+        if self.pending_gesture is None or self.gesture_in_progress or not self.paused:
+            raise ValueError('No pending paused gesture')
+        name = self.pending_gesture
+        self.pending_gesture = None
+        self.gesture_in_progress = True
+        self.gesture_cancel_requested = False
+        self.log('gesture_started', gesture=name)
+        return name
+
+    def finish_gesture(self, name, status):
+        self.pending_gesture = None
+        self.gesture_in_progress = False
+        self.gesture_cancel_requested = False
+        self.paused = True
+        # Commands spoken during the gesture cannot resume picking afterward.
+        self.resume_after = self.clock()
+        self.log('gesture_' + status, gesture=name, reason='Remain stopped; say a fresh start to inspect')
 
     def inspection_settings(self, base):
         """Immutable-by-copy settings snapshot for a single inspection epoch."""

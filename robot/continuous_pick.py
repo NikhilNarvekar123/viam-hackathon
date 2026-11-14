@@ -18,6 +18,7 @@ from core.runtime_events import Checkpoint, managed_runtime
 from core.voice_control import VoiceControl, voice_runtime_settings
 from robot.external_box_pick import ExternalBoxBatch
 from robot.home_scene import HomeScene
+from robot.gestures import run_gesture
 from vlm.service import decide_wrist_objects
 
 
@@ -137,6 +138,19 @@ async def run_continuous(config, root, *, fake=False, confirm_motion=False,
             # fresh capture; requests arriving during inspection are checked again.
             initial = checkpoint()
             while voice is not None and voice.paused and not stop.is_set():
+                if voice.pending_gesture is not None:
+                    name = voice.begin_gesture()
+                    def gesture_checkpoint():
+                        signal = runtime.checkpoint()  # Faults still abort, including while gesturing.
+                        voice.consume(signal.events)
+                        return stop.is_set() or signal.reset_requested or voice.gesture_cancel_requested
+                    try:
+                        outcome = await run_gesture(name, config, root, fake=fake,
+                            confirm_motion=confirm_motion, checkpoint=gesture_checkpoint)
+                    except BaseException:
+                        voice.finish_gesture(name, 'failed')
+                        raise
+                    voice.finish_gesture(name, outcome['status'])
                 await asyncio.sleep(runtime.poll_s)
                 initial = checkpoint()  # Also checks producer/overflow faults while stopped.
             if stop.is_set():break

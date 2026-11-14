@@ -19,7 +19,7 @@ def test_whole_utterance_parser(text, command):
 
 
 @pytest.mark.parametrize('text', [
-    '', None, 'do not start', "don't start", 'stop then start', 'please do not stop',
+    '', None, 'stop', 'robot stop', 'do not start', "don't start", 'stop then start', 'please do not stop',
     'I started yesterday', 'starting', 'hello start', 'dance and start',
     'new policy', 'new policy: ', 'new policy ' + 'x' * 601,
     'new policy reject red\nstart', 'we need a new policy reject red',
@@ -36,6 +36,8 @@ def setup(tmp_path):
 
 
 def command(text, seq=1, heard=100.0, created=100.0, source='audio', kind=EventKind.VOICE_COMMAND):
+    # Tests describe the stop action; its spoken phrase now requires please.
+    if text == 'stop':text = 'stop please'
     payload = dict(parse_voice_command(text), sequence=seq, heard_at=heard)
     return RuntimeEvent(kind, source, created, json.dumps(payload))
 
@@ -57,11 +59,41 @@ def test_pause_requires_start_spoken_after_acknowledgement(tmp_path, text):
     assert control.consume([command(text, 2), command('start', 3)])
     assert control.paused
     assert not control.consume([command('start', 3)])  # duplicate cannot resume
+    if text in ('hello', 'dance'):
+        name = control.begin_gesture()
+        control.finish_gesture(name, 'completed')
     clock[0] = 101
     assert control.consume([command('start', 4, heard=101, created=101)])
     assert not control.paused
     if text.startswith('new policy'):
         assert control.active_policy == 'reject red parts'
+
+
+def test_start_during_gesture_ignored_and_buffered_start_cannot_resume_after_it(tmp_path):
+    control, clock = setup(tmp_path)
+    control.consume([command('hello')])
+    name = control.begin_gesture()
+    clock[0] = 101
+    assert not control.consume([command('start', 2, heard=101, created=101)])
+    clock[0] = 102
+    control.finish_gesture(name, 'completed')
+    assert not control.consume([command('start', 3, heard=101, created=101)])
+    assert control.paused
+    clock[0] = 103
+    assert control.consume([command('start', 4, heard=103, created=103)])
+    assert not control.paused
+
+
+def test_stop_cancels_pending_or_inflight_gesture(tmp_path):
+    control, clock = setup(tmp_path)
+    control.consume([command('hello'), command('stop', 2)])
+    assert control.pending_gesture is None and control.paused
+    clock[0] = 101
+    control.consume([command('dance', 3, heard=101, created=101)])
+    assert control.begin_gesture() == 'dance'
+    clock[0] = 102
+    control.consume([command('stop', 4, heard=102, created=102)])
+    assert control.gesture_cancel_requested and control.paused
 
 
 def test_policy_only_activates_on_later_start_and_settings_are_snapshots(tmp_path):

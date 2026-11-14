@@ -6,30 +6,34 @@ validated only; do not interpret it as physical validation or deployment.
 
 ## Commands
 
-The process initially waits for audio readiness and **start**, with no home/pick
-movement while stopped. Model initialization is allowed before start.
+The process initially waits for audio readiness and a command, without automatic
+home/pick movement. **start** begins picking; hello/dance request only their taught
+gesture and leave picking stopped. Model initialization is allowed before start.
 
 | Utterance | Controller behavior |
 |---|---|
-| `hello` | Log a **wave placeholder**, no gesture movement; remain stopped until start. |
+| `hello` | After any active delivery completes, replay the taught left/right wave twice, then home; remain stopped until a fresh start. |
 | `start` | Confirm any pending policy; discard all pending targets/verdicts; start a fresh home/capture/inspection epoch. Also resets a currently running epoch. |
-| `stop` | Finish the active attempt and delivery/return, including the picker's normal return-to-scan; then stay stopped and listening. No extra home/open or next pick. |
+| `stop please` / `please stop` | Finish the active attempt and delivery/return, including the picker's normal return-to-scan; then stay stopped and listening. No extra home/open or next pick. |
 | `new policy <criteria>` | Log the exact proposed rule and pause at the safe checkpoint. Nothing activates until a subsequent start. |
-| `dance` | Log a **left-right placeholder**, no gesture movement; remain stopped until start. |
+| `dance` | After any active delivery completes, replay taught left/up/right/down once, then home; remain stopped until a fresh start. |
 
-Wave and dance have **no trajectories and no enabled motion path**. Future real
-gestures require separately reviewed taught poses and empty-gripper/idle checks.
+Wave and dance use the teammate's saved switch poses in `config/gestures.yaml`;
+see `GESTURES.md`. Real execution still requires motion authorization and verified
+empty-gripper/idle checks. Saved endpoints do not validate transition clearance.
 There is no text-to-speech acknowledgment: read the `[VOICE]` console records.
 
-Speak one complete command at a time. Optional `robot` / `please` prefixes are
-accepted. Negation, conversational keyword matches, multiple-command utterances,
+Speak one complete command at a time. The stop phrase requires **stop please** or
+**please stop** (optionally prefixed by robot); bare stop is ignored. Optional
+`robot` / `please` prefixes are accepted for other commands. Negation, conversational keyword matches, multiple-command utterances,
 empty/oversized policies, and fuzzy verb forms are not actionable. For example,
 `do not start`, `stop then start`, and `I started yesterday` are ignored. This
 parser cannot detect every speech-recognition error; verify the logged transcript.
 
 After a stop, gesture, or policy acknowledgment, say **start again** (the literal
 utterance `start`, not the phrase "start again"). A start buffered before that
-acknowledgment is deliberately ignored. Sequence numbers suppress replay; freshness
+acknowledgment is deliberately ignored. For gestures, wait until completion; a start
+spoken during a gesture cannot resume picking afterward. Sequence numbers suppress replay; freshness
 uses the oldest acquisition included in the speech window, not delayed inference
 completion. Non-stop commands expire after `command_max_age_s` (default 30 seconds).
 A stop never expires merely because delivery/inference took a long time.
@@ -42,6 +46,9 @@ A stop never expires merely because delivery/inference took a long time.
 - **Voice stop is NOT an emergency stop.** Whisper's rolling window, transcription,
   an in-flight inference batch, and a running SDK/picker operation can delay the
   checkpoint. Use machine Stop / physical E-stop for immediate stopping needs.
+- During gestures, stop/new policy cancels remaining waypoints after the current
+  waypoint completes; no automatic home/release occurs on interruption or failure.
+  A new policy remains pending for start confirmation. See `GESTURES.md`.
 - During delivery, commands only queue. On successful completion, the controller
   consumes them **before** additional home/open motion. If the delivery fails,
   failure/holding-state handling wins: no automatic recovery, release, or restart.
@@ -78,7 +85,7 @@ Restarting the process restores the configured default policy and stopped state.
 
 Private logs:
 - `logs/voice/<session>.jsonl`: readiness, ignored commands, pending/active policy,
-  version, starts/stops, disabled gesture acknowledgments.
+  version, starts/stops, and gesture requests/completions/interruption.
 - Per-inspection VLM and batch reports: effective policy/version and verdicts.
 
 ## Configuration and testing

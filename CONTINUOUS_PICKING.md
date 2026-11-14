@@ -14,8 +14,9 @@ The existing default batch mode remains unchanged.
   events, starts stopped, and requires start to resume/reset. Stop waits for the
   completed delivery/return. This is NOT an immediate or safety STOP.
 - New policies are staged/logged, then a later start confirms them for Qwen and
-  fresh inspection. Custom policies disable fast-pass. Wave/dance are disabled
-  placeholders. See `VOICE_CONTROL.md` for semantics, tests, and constraints.
+  fresh inspection. Custom policies disable fast-pass. Hello/dance replay configured
+  taught poses after delivery and empty-gripper/idle checks, then remain stopped.
+  See `VOICE_CONTROL.md` and `GESTURES.md` for semantics, tests, and constraints.
 - Camera/audio settings must be verified before deployment. Hooks remain disabled
   by default. The standalone camera diagnostic does NOT publish to the controller.
 - Continuous mode does not call the old overview-counting stage. It uses wrist
@@ -95,8 +96,9 @@ python main.py --continuous --fake
 ```
 
 With `--voice`, commands are consumed before any additional post-delivery home/open;
-while stopped, only a fresh start resumes, never a scene-change event. Gestures do not
-move at all. Pausing preserves placement counters and faults. See `VOICE_CONTROL.md`.
+while stopped, only a fresh start resumes picking, never a scene-change event. A
+hello/dance request runs the taught gesture only, then remains stopped. Pausing
+preserves placement counters and faults. See `VOICE_CONTROL.md` and `GESTURES.md`.
 
 Models load once for the process. Changing a model path requires a new process to
 ensure the new model is used; never start a second live controller alongside one.

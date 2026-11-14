@@ -250,7 +250,7 @@ def main():
                         help='Indefinite wrist/home validation loop: no ENTER pauses or cycle limit; no overview counting')
     parser.add_argument('--continuous-config',type=Path,default=ROOT/'config/continuous_pick.yaml')
     parser.add_argument('--voice',action='store_true',
-                        help='Continuous mode only: listen for start/stop/policy; initially stopped, gestures disabled')
+                        help='Continuous mode only: listen for start/stop/policy/hello/dance; initially stopped')
     parser.add_argument('--inspect-only',action='store_true',help='Disable the post-VLM pick/sort in the main pipeline')
     parser.add_argument('--pick-target-source',choices=['pipeline','picker'],
                         help='pipeline: supplied boxes/verdicts for the batch; picker: own selection/reclassification')

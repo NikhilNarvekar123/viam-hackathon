@@ -1,0 +1,10 @@
+# Replay the teammate's saved joint poses; no invented offsets or gripper clapping.
+# Saved switch cfg.joints are radians. Resolve/snapshot all poses before any motion.
+# Real execution still requires --confirm-motion and idle/empty-gripper checks.
+enabled: true
+step_timeout_s: 60.0
+joint_tolerance_deg: 1.0
+settle_s: 0.2
+routines:
+  hello: [left_wave, right_wave, left_wave, right_wave]  # Two left/right cycles.
+  dance: [left_wave, up_wave, right_wave, down_wave]    # One cycle.

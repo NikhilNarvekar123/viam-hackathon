@@ -5,10 +5,11 @@
 wrist_inspection_config: config/wrist_inspection.yaml
 vlm_service_config: config/vlm_service.yaml
 pick_bolt_config: config/pick_bolt.yaml
+gestures_config: config/gestures.yaml
 pick_after_inspection: true
 pick_target_source: pipeline  # pipeline: original boxes/verdicts, whole batch; picker: own selection/reclassification
 voice_control:
-  enabled: false  # Opt in with --continuous --voice. Starts paused; no gesture motion.
+  enabled: false  # Opt in with --continuous --voice. Initially paused; taught hello/dance supported.
   command_max_age_s: 30.0  # Stop is never expired. New start must follow acknowledgement.
 runtime_events:
   enabled: false  # Opt-in scaffold; existing pipeline behavior is unchanged by default.
