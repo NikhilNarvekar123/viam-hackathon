@@ -40,6 +40,8 @@ class ExternalBoxBatch:
         self.mapping=yaml.safe_load((self.root/self.settings['mapping_config']).read_text())
         self.state=state if state is not None else {}
         self.st=None;self.wrist=None;self.rows=[]
+        self.home_ready=False;self.reference_joints=None;self.fake_scene=None
+        self.last_home_frame_time=None
         for key in ['target_match_radius_mm','max_batch_age_s']:
             if not math.isfinite(float(self.settings[key])) or self.settings[key]<=0:
                 raise ValueError(f'Invalid {key}')
@@ -78,6 +80,52 @@ class ExternalBoxBatch:
                     except Exception:print('Stop failed: use machine Stop / physical E-stop.')
             finally:await self.st.close()
 
+    async def home_for_check(self):
+        """Continuous-mode safe boundary: never home/open if still holding."""
+        if self.fake:
+            self.st.actions.append({'home_for_validation':True})
+        else:
+            await self.st.require_idle_controller()
+            holding=await self.st.gripper.is_holding_something(timeout=10)
+            if holding.is_holding_something:
+                raise ValueError('Gripper still holds an item; refusing home/open')
+            await self.st.go_home()
+        self.home_ready=True
+
+    async def capture_home_frames(self,settings):
+        """Two RGB-only samples at the original verified home pose, no inference."""
+        if not self.home_ready:raise ValueError('Home scene capture requires verified home')
+        if self.fake:
+            if self.fake_scene is None:raise ValueError('Missing fake reference scene')
+            return self.fake_scene.copy(),self.fake_scene.copy()
+        from robot.viam_hw import decode_color,select_image
+        async def capture_one():
+            await self.st.require_idle_controller()
+            before=list((await self.st.arm.get_joint_positions()).values)
+            images,metadata=await self.st.cam.get_images()
+            timestamp=getattr(metadata,'captured_at',None)
+            if timestamp is None:raise ValueError('Home-view capture has no freshness metadata')
+            stamp=float(timestamp.seconds)+float(timestamp.nanos)*1e-9
+            age=time.time()-stamp
+            if (not math.isfinite(stamp) or stamp<=0 or age<0 or age>settings['max_frame_age_s']
+                    or self.last_home_frame_time is not None and stamp<=self.last_home_frame_time):
+                raise ValueError('Home-view frame is stale, repeated, or timestamp is invalid')
+            self.last_home_frame_time=stamp
+            after=list((await self.st.arm.get_joint_positions()).values)
+            await self.st.require_idle_controller()
+            reference=self.reference_joints
+            if (not reference or len(before)!=len(reference) or len(after)!=len(reference)
+                    or not np.isfinite(reference+before+after).all()
+                    or max(abs(a-b) for a,b in zip(before,reference))>settings['home_joint_tolerance_deg']
+                    or max(abs(a-b) for a,b in zip(after,reference))>settings['home_joint_tolerance_deg']):
+                raise ValueError('Wrist comparison pose differs from original home capture')
+            return decode_color(select_image(images))
+        await asyncio.sleep(settings['settle_s'])
+        first=await asyncio.wait_for(capture_one(),settings['capture_timeout_s'])
+        await asyncio.sleep(settings['sample_interval_s'])
+        second=await asyncio.wait_for(capture_one(),settings['capture_timeout_s'])
+        return first,second
+
     async def capture_and_inspect(self,inspector):
         self.captured_at=time.monotonic()
         if self.fake:
@@ -112,10 +160,12 @@ class ExternalBoxBatch:
             folder=Path(self.wrist['output_dir'])
             np.save(folder/'picker_depth.npy',depth)
             if gray is not None:np.save(folder/'picker_gray.npy',gray)
+            self.reference_joints=before
             meta=dict(fake=False,intrinsics=asdict(self.st.K),rotation=rotation.tolist(),
                 translation_mm=translation.tolist(),joints_before_deg=before,joints_after_deg=after,
                 acquisition='sequential RGB/depth, stationary pose; not hardware synchronized')
         folder=Path(self.wrist['output_dir'])
+        if self.fake:self.fake_scene=image.copy()
         if not self.wrist.get('localization'):
             raise ValueError('External boxes currently require automatic crop localization')
         mask=np.asarray(Image.open(folder/'foreground_mask.png'))>0
@@ -131,7 +181,9 @@ class ExternalBoxBatch:
         print(f"Pipeline boxes: {sum(r['status']=='matched' for r in self.rows)}/{len(self.rows)} localized from supplied ROIs; no reclassification.",flush=True)
         return self.wrist
 
-    async def execute(self,decisions,checkpoint=None):
+    async def execute(self,decisions,checkpoint=None,after_attempt=None):
+        # Optional continuous-mode hook runs only after a fully completed attempt
+        # AND delivery/return. Failures propagate without invoking recovery/home.
         if self.wrist is None:raise ValueError('No shared batch capture')
         by_id={d['id']:d for d in decisions}
         if len(by_id)!=len(decisions):raise ValueError('Duplicate decision IDs')
@@ -146,7 +198,19 @@ class ExternalBoxBatch:
         if order not in ('tallest_first','input'):raise ValueError('Invalid pick_order')
         pending=list(self.rows)
         report['pick_order']=order
+        completed=None
         while True:
+            if completed is not None and after_attempt is not None:
+                check=await after_attempt(completed)
+                completed['home_check']=check
+                prepared=False  # Hook returned home; next target must go to scan again.
+                if check['status']=='reset_requested':
+                    report.update(status='reset_requested',pending_crop_ids=[r['crop_id'] for r in pending])
+                    save()
+                    return report
+                if check['status']!='unchanged':raise ValueError('Invalid after-attempt result')
+                save()
+            completed=None
             # Replan remaining work only; no new inference or geometry assumptions.
             if order=='tallest_first':pending.sort(key=lambda r:-float(r.get('height_mm',0.)))
             # Before the first target AND after each attempt/delivery (including the last).
@@ -164,6 +228,7 @@ class ExternalBoxBatch:
             action=decision.get('final_action','hold')
             entry=dict(crop_id=ident,action=action,binding=binding,status='pending',sorting_executed=False)
             results.append(entry)
+            completed=entry
             if action not in ('accept','reject'):
                 entry['status']='hold';print(f'Batch crop {ident}: HOLD, not grasped.');save();continue
             if binding['status']!='matched':
@@ -178,6 +243,7 @@ class ExternalBoxBatch:
             route={'accept':'box','reject':'reject'}[action]
             print(f"Batch crop {ident}: {action} -> existing picker at world XY {xy.tolist()}",flush=True)
             if self.fake:
+                self.home_ready=False
                 self.st.actions.append(dict(simulated_pick=xy.tolist(),crop_id=ident))
                 result=dict(status='held',decision=route,xy=xy,grasp_z=69.)
             else:
@@ -185,8 +251,10 @@ class ExternalBoxBatch:
                 if (await self.st.gripper.is_holding_something()).is_holding_something:
                     raise ValueError('Gripper holds an item; stopping batch')
                 if not prepared:
-                    await self.st.go_home();setup_good_destination(self.st,self.settings)
+                    if not self.home_ready:await self.st.go_home()
+                    setup_good_destination(self.st,self.settings)
                     await self.st.go_scan();prepared=True
+                self.home_ready=False
                 # Deliberately no image extraction, model, VLM call or whole-scene comparison.
                 async def verdict(st,item,target,info,objects):
                     if time.monotonic()-self.captured_at>self.settings['max_batch_age_s']:

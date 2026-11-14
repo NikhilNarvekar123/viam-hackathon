@@ -67,8 +67,13 @@ reset event instead of automatically retrying returned rejects or blocked items.
 An exhausted batch is **not proof of an empty workstation**. Listeners stay alive
 while waiting. A finite `--n` run still exits at its limit.
 
-Live multi-cycle picking **still requires the existing operator pause**. A reset
-request is not permission to skip ENTER or `--confirm-motion`. At that pause,
+Default batch-mode live multi-cycle picking **still requires the existing operator
+pause**. A reset request is not permission to skip ENTER or `--confirm-motion`.
+The explicitly selected `--continuous` mode has different orchestration: no ENTER
+pauses or cycle limits, safe home-view validation after completed attempts, and
+idle monitoring when pending work is exhausted. It retains motion authorization,
+capacity, fault and holding-state gates. See `CONTINUOUS_PICKING.md`. The event
+kinds and producer interface below remain unchanged. At that pause,
 ENTER starts a fresh cycle, Q/EOF exits, and the producer threads remain alive.
 Making validated voice commands authorize later live cycles is deliberately a
 separate change, not part of this scaffold. Capacity and faults may end a run

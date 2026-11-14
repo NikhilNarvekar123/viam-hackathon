@@ -244,6 +244,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", choices=["overview", "pick", "sort"], default="overview",
                         help="overview: full main pipeline; pick: standalone inspected picking; sort: legacy scaffolding")
+    parser.add_argument('--continuous',action='store_true',
+                        help='Indefinite wrist/home validation loop: no ENTER pauses or cycle limit; no overview counting')
+    parser.add_argument('--continuous-config',type=Path,default=ROOT/'config/continuous_pick.yaml')
     parser.add_argument('--inspect-only',action='store_true',help='Disable the post-VLM pick/sort in the main pipeline')
     parser.add_argument('--pick-target-source',choices=['pipeline','picker'],
                         help='pipeline: supplied boxes/verdicts for the batch; picker: own selection/reclassification')
@@ -257,6 +260,10 @@ def main():
                         help="Explicitly authorize real arm/gripper motion")
     parser.add_argument("--config", type=Path, default=ROOT / "config/config.yaml")
     args = parser.parse_args()
+    if args.continuous and (args.stage!='overview' or args.overview_image or args.inspect_only
+                           or args.pick_target_source=='picker' or args.n is not None
+                           or args.pause_between_cycles is not None):
+        parser.error('--continuous cannot be combined with stage overrides, offline/inspect-only, picker targets, --n, or pause flags')
     if args.n is not None and args.n < 1:
         parser.error("--n must be at least 1")
     if args.stage in ('overview','pick') and not args.fake and not args.overview_image and not args.confirm_motion:
@@ -269,7 +276,12 @@ def main():
         config = yaml.safe_load(stream)
     if args.pick_target_source is not None:config['pick_target_source']=args.pick_target_source
     try:
-        if args.stage == "overview":
+        if args.continuous:
+            from robot.continuous_pick import run_continuous
+            continuous_settings=yaml.safe_load(args.continuous_config.read_text())
+            asyncio.run(run_continuous(config,ROOT,fake=args.fake,confirm_motion=args.confirm_motion,
+                                      settings=continuous_settings))
+        elif args.stage == "overview":
             cycles = args.n if args.n is not None else (1 if args.overview_image else None)
             asyncio.run(run_overview_loop(config, args.fake, args.confirm_motion, cycles, args.overview_image,
                                           args.pause_between_cycles,args.inspect_only))
