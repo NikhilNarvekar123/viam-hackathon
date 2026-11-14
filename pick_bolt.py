@@ -1372,6 +1372,9 @@ async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool =
             return dict(status="hand", why=why)
     if target_world_xy is not None and "height" in info:   # a standing part is never matched by its ROI: aim at its top
         up = summit(info, st.K, target_world_xy)
+        if up is not None:
+            print(f"  standing check: top {up[1]:.0f} mm up, {np.linalg.norm(up[0] - np.asarray(target_world_xy)[:2]):.0f} mm "
+                  f"from the target (standing if >= {STANDING_MIN_TOP_MM:.0f} mm up and <= {STANDING_AIM_MM:.0f} mm off)")
         if up is not None and up[1] >= STANDING_MIN_TOP_MM \
                 and np.linalg.norm(up[0] - np.asarray(target_world_xy)[:2]) <= STANDING_AIM_MM:
             return await pick_standing(st, stop_at, info, objs, up[0], up[1])

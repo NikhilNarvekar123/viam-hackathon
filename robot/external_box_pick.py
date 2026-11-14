@@ -276,6 +276,11 @@ class ExternalBoxBatch:
                 self.st.args.debug_dir=str(debug)
                 def supplied_roi(info):
                     return target_in_view(binding,info,self.st.K,self.mapping)
+                # Scan from straight above the target: from the fixed scan pose a part near the edge of the view
+                # (x~260, by the base) projected its ROI outside the frame and was never picked.
+                above=self.st.gripper_xyz_for_camera([xy[0],xy[1],picker.TABLE_Z_EXPECTED+picker.SCAN_HEIGHT_MM])
+                if picker.reachable(above):
+                    await self.st.move_gripper(above,picker.NATURAL_THETA,'camera above the target (scan height)',linear=True)
                 result=await picker.pick_one(self.st,'pick',[],target_world_xy=xy,
                     target_tolerance_mm=self.settings['target_match_radius_mm'],roi_target=supplied_roi)
             entry.update(status=result['status'],why=result.get('why'),picker_decision=result.get('decision'),

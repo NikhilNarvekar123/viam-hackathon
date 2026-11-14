@@ -1,5 +1,5 @@
 # Opt-in only: main.py --stage pick --confirm-motion. Not physically validated by this integration.
-good_xy: [290.0, 295.0]  # GOOD, taped +y zone; places x 290..430, y 295..365: claws stay clear of wall-side (y>=450).
+good_xy: [310.0, 320.0]  # GOOD, taped +y zone; places x 310..450, y 320..390: claws stay ~16 mm clear of wall-side (y>=450).
 reject_xy: [290.0, -330.0]  # REJECT, taped -y zone; places x 290..430, y -330..-400. null = put back.
 hold_xy: null            # Inspection errors/HOLD leave the item unpicked.
 max_good_places: 12      # Stop before exceeding the controller's three-column/four-row place area.

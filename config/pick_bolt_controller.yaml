@@ -15,8 +15,8 @@ PAUSE_S: 0.25
 GO_HOME_FIRST: true
 BOX_HINT_XY: null
 GOOD_XY:
-- 290
-- 295
+- 310
+- 320
 REJECT_XY:  # other end of the table from GOOD_XY; its places grow toward -y
 - 290
 - -330
@@ -128,7 +128,7 @@ BOLT_LYING_MIN_LEN: 25.0
 BOLT_LYING_MIN_ASPECT: 1.7
 BOLT_LYING_MAX_W: 45.0
 GRIP_MAX_SPAN_MM: 70.0
-GRIP_MIN_H_MM: 3.0  # was 5.5: flat parts (washers, flat nuts) were refused
+GRIP_MIN_H_MM: 2.0  # was 5.5, then 3.0: flat parts (washers, flat nuts) were refused
 MAX_OBJECT_LEN: 110.0
 MIN_AREA_MM2: 20.0
 MAX_AREA_MM2: 4000.0
