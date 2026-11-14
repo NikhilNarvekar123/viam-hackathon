@@ -21,6 +21,8 @@ class EventKind(str, Enum):
     RESET_BATCH = 'reset_batch'
     SCENE_CHANGED = 'scene_changed'
     NOTICE = 'notice'
+    AUDIO_READY = 'audio_ready'
+    VOICE_COMMAND = 'voice_command'
 
 
 @dataclass(frozen=True)

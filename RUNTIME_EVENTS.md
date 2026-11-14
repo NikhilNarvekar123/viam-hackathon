@@ -2,11 +2,12 @@
 
 This is a small extension to the supplied-ROI batch pipeline, not a replacement
 controller. `main.py` still owns orchestration; the original picker still owns
-its grasp/refinement/delivery logic. No speech model, camera change detector,
-secondary scene-matching algorithm, new device placement, or safety-stop system
-is implemented here. This runtime scaffold was deployed from source `9fd2589`
-and fake-tested on the NUC; physical event-enabled behavior is not validated.
-Listeners remain disabled. The separate CPU overview comparison/replay primitive
+its grasp/refinement/delivery logic. The original scaffold was deployed from source
+`9fd2589` and fake-tested on the NUC; physical event-enabled behavior is not validated.
+The merged Whisper producer now supports opt-in checkpoint voice control through
+`main.py --continuous --voice`; see `VOICE_CONTROL.md`. No safety-stop system or
+secondary scene-matching algorithm is added. Listeners remain disabled by default.
+The separate CPU overview comparison/replay primitive
 is offline-only, not a live producer; see `monitors/OVERVIEW_DETECTION.md`.
 
 ## Flow
@@ -48,7 +49,9 @@ for the main pipeline with `pick_target_source: pipeline`, not the legacy sort,
 independent picker, offline image, or inspection-only paths.
 
 When `runtime_events.enabled: true`, the configured producer hooks run in separate
-threads. Enabling a hook currently starts an **inert wait**, not a real listener:
+threads. Audio starts Whisper/microphone capture (diagnostic NOTICE only unless
+continuous voice mode enables commands); overview is still an inert wait. Fake
+hooks never access hardware/models. This example is not a validated live configuration:
 
 ```yaml
 runtime_events:
@@ -75,9 +78,10 @@ idle monitoring when pending work is exhausted. It retains motion authorization,
 capacity, fault and holding-state gates. See `CONTINUOUS_PICKING.md`. The event
 kinds and producer interface below remain unchanged. At that pause,
 ENTER starts a fresh cycle, Q/EOF exits, and the producer threads remain alive.
-Making validated voice commands authorize later live cycles is deliberately a
-separate change, not part of this scaffold. Capacity and faults may end a run
-regardless of whether the workstation is clear.
+Voice commands never bypass this batch-mode ENTER gate. Use the explicitly selected
+continuous voice mode for start/soft-stop/policy behavior; it still requires initial
+motion authorization. Capacity and faults may end a run regardless of whether the
+workstation is clear.
 
 ## Producer contract / audio handoff
 
@@ -88,6 +92,10 @@ Implement `run(context)` in `monitors/audio.py` or `monitors/overview.py`:
   scene change. Camera adapters must distinguish robot movement/occlusion and
   expected pick/removal activity; raw frame differences are insufficient.
 - `context.publish(EventKind.NOTICE, detail)` is informational, with no motion action.
+- In continuous voice mode, audio publishes `AUDIO_READY` after model/microphone setup,
+  then `VOICE_COMMAND` with JSON command/transcript, sequence, speech-acquisition time,
+  and optional policy. Only the controller's voice state machine interprets it;
+  other sources and notices cannot control it. The parser and consumer both validate.
 - `context.stop` is a `threading.Event`; honour it and use bounded input waits.
 - `context.settings` is this producer's config section (add resources/devices there).
 - `context.fake` must prevent real microphone/camera/model access in fake mode.
@@ -99,8 +107,9 @@ Implement `run(context)` in `monitors/audio.py` or `monitors/overview.py`:
 
 The runtime injects the event source name and a monotonic timestamp. This is an
 **in-process** interface; a separate ASR process needs an explicit IPC adapter.
-No ASR/NPU implementation or model downloads are included. Extra command semantics,
-source confidence/expiry policy and identity tracking remain future work.
+Whisper/OpenVINO ASR is in `monitors/audio.py`; no model downloads are included.
+Voice control adds expiry/replay checks and checkpoint semantics, not speaker
+identity/authentication or arbitrary command execution. See `VOICE_CONTROL.md`.
 
 For tests or another embedding application, supply a caller-owned `EventRuntime`
 to `main.run_overview_loop(..., event_runtime=runtime)`. Start/close its producer

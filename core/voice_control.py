@@ -1,0 +1,159 @@
+"""Checkpoint-only voice control. No hardware, model calls, or arbitrary dispatch.
+
+A start must be spoken AFTER a stop/policy/gesture has been acknowledged. Buffered
+starts cannot cancel it. A voice stop is a soft pause, never an emergency stop.
+"""
+from copy import deepcopy
+from datetime import datetime, timezone
+import json
+import math
+from pathlib import Path
+import re
+import time
+
+from core.runtime_events import EventKind
+
+MAX_POLICY_CHARS = 600
+COMMANDS = frozenset(('hello', 'start', 'stop', 'dance', 'new_policy'))
+
+
+def normalize_transcript(text):
+    return re.sub(r'\s+', ' ', re.sub(r'[^a-z0-9\s]', ' ', text.lower())).strip()
+
+
+def parse_voice_command(raw_text):
+    """Whole utterances only: never turn 'do not start' or 'stop then start' into start."""
+    if not isinstance(raw_text, str) or len(raw_text) > 2048:
+        return None
+    text = raw_text.strip()
+    policy = re.fullmatch(r'(?:robot[,\s]+)?(?:please\s+)?new\s+polic(?:y|ies)\b\s*[:.,-]?\s*(.+)',
+                          text, flags=re.IGNORECASE | re.DOTALL)
+    if policy:
+        rule = policy.group(1).lstrip(' \t:.,-').strip()
+        if rule and len(rule) <= MAX_POLICY_CHARS and not any(ord(c) < 32 for c in rule):
+            return dict(command='new_policy', policy=rule, raw_text=text)
+        return None
+    match = re.fullmatch(r'(?:robot )?(?:please )?(hello|start|stop|dance)(?: please)?',
+                         normalize_transcript(text))
+    return dict(command=match.group(1), raw_text=text) if match else None
+
+
+def voice_runtime_settings(config):
+    settings = deepcopy(config['runtime_events'])
+    settings['enabled'] = True
+    settings['producers']['audio'].update(enabled=True, commands_enabled=True)
+    return settings
+
+
+class VoiceControl:
+    """One controller-owned state machine; consume all events through its checkpoint.
+
+    Policies live only in this process. Confirmation changes the next inspection
+    snapshot, never an in-flight request or an organizer-managed service config.
+    """
+    def __init__(self, settings, root, *, clock=time.monotonic):
+        self.clock = clock
+        self.max_age = float(settings.get('command_max_age_s', 30.0))
+        if not math.isfinite(self.max_age) or self.max_age <= 0:
+            raise ValueError('Invalid voice command_max_age_s')
+        self.ready = False
+        self.ready_after = math.inf
+        self.paused = True
+        self.pending_policy = None
+        self.active_policy = None
+        self.policy_version = 0
+        self.resume_after = -math.inf
+        self.last_sequence = 0
+        folder = Path(root) / 'logs/voice'
+        folder.mkdir(parents=True, exist_ok=True)
+        self.log_path = folder / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ') + '.jsonl')
+        self.log('waiting', reason='Waiting for audio readiness and a fresh start; gestures are motion-disabled.')
+
+    def log(self, event, **fields):
+        row = dict(event=event, time=datetime.now(timezone.utc).isoformat(),
+                   paused=self.paused, policy_version=self.policy_version, **fields)
+        # Serialize terminal output too: transcripts must not inject terminal control sequences.
+        line = json.dumps(row, ensure_ascii=True, allow_nan=False)
+        with self.log_path.open('a') as stream:
+            stream.write(line + '\n')
+        print('[VOICE] ' + line, flush=True)
+
+    def consume(self, events):
+        """Return True when pending inspection work must be abandoned."""
+        reset = False
+        for event in events:
+            if event.source != 'audio':
+                continue
+            if event.kind == EventKind.AUDIO_READY:
+                if not self.ready:
+                    self.ready = True
+                    self.ready_after = event.created_at
+                    self.log('ready', reason='Say start to begin. Voice stop is NOT an emergency stop.')
+                continue
+            if event.kind != EventKind.VOICE_COMMAND:
+                continue
+            try:
+                if len(event.detail) > 4096:
+                    raise ValueError('oversized envelope')
+                payload = json.loads(event.detail)
+                if not isinstance(payload, dict):
+                    raise ValueError('invalid envelope')
+                command = payload.get('command')
+                sequence = payload.get('sequence')
+                heard = payload.get('heard_at')
+                if (command not in COMMANDS or type(sequence) is not int or sequence < 1
+                        or type(heard) not in (int, float) or not math.isfinite(heard)):
+                    raise ValueError('invalid command metadata')
+                parsed = parse_voice_command(payload.get('raw_text'))
+                if not parsed or parsed['command'] != command or parsed.get('policy') != payload.get('policy'):
+                    raise ValueError('transcript and command disagree')
+                if not math.isfinite(event.created_at) or heard > event.created_at or event.created_at > self.clock():
+                    raise ValueError('invalid command timestamps')
+            except (ValueError, TypeError):
+                self.log('ignored', reason='Malformed or ambiguous voice command')
+                continue
+            if sequence <= self.last_sequence:
+                self.log('ignored', command=command, reason='Duplicate/out-of-order command')
+                continue
+            self.last_sequence = sequence
+            # Never expire a stop: a long delivery/inference must still end paused.
+            if command != 'stop' and self.clock() - heard > self.max_age:
+                self.log('ignored', command=command, reason='Stale command; repeat it after acknowledgement')
+                continue
+            if command == 'start':
+                if not self.ready or heard < self.ready_after or heard <= self.resume_after:
+                    self.log('ignored', command=command, reason='Say start AFTER ready/stop/policy/gesture acknowledgement')
+                    continue
+                if self.pending_policy is not None:
+                    self.active_policy = self.pending_policy
+                    self.pending_policy = None
+                    self.policy_version += 1
+                    self.log('policy_activated', policy=self.active_policy, stage1_fast_pass=False)
+                self.paused = False
+                reset = True
+                self.log('start', reason='Discard all pending targets/verdicts; fresh inspection')
+            else:
+                self.paused = True
+                self.resume_after = self.clock()
+                reset = True
+                if command == 'new_policy':
+                    self.pending_policy = parsed['policy']
+                    self.log('policy_pending', policy=self.pending_policy, reason='Say start to confirm and inspect afresh')
+                elif command in ('hello', 'dance'):
+                    self.log('gesture_placeholder', gesture='wave' if command == 'hello' else 'left_right',
+                             motion_enabled=False, reason='No taught trajectory; remain stopped until start')
+                else:
+                    self.log('stopped', reason='Safe checkpoint reached; remain stopped until start')
+        return reset
+
+    def inspection_settings(self, base):
+        """Immutable-by-copy settings snapshot for a single inspection epoch."""
+        settings = deepcopy(base)
+        settings['inspection_policy'] = dict(version=self.policy_version, text=self.active_policy)
+        if self.active_policy is not None:
+            template = settings.get('custom_policy_prompt')
+            if not isinstance(template, str) or template.count('{policy}') != 1:
+                raise ValueError('custom_policy_prompt must contain exactly one {policy}')
+            settings['prompt'] = template.replace('{policy}', self.active_policy)
+            settings['stage1_fast_pass'] = False
+        return settings

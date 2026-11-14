@@ -7,14 +7,17 @@ The existing default batch mode remains unchanged.
 
 ## Ownership and coordination
 
-- Main/controller owns all motion. `monitors/audio.py`, `monitors/overview.py`,
-  `core/runtime_events.py`, and the producer contract are unchanged.
-- The existing event kinds are the ONLY supported semantics: `reset_batch` and
-  `scene_changed` invalidate pending work; `notice` is informational. No arbitrary
-  command execution, voice pause/resume, or immediate STOP is added.
-- Camera/audio implementations must be coordinated separately before deployment.
-  Existing configured hooks remain inert/disabled unless their owners replace and
-  enable them. The standalone camera diagnostic does NOT publish to the controller.
+- Main/controller owns all motion. Audio runs in its own producer thread; the
+  `run(context)` producer interface is retained. No arbitrary command dispatch.
+- `reset_batch` and `scene_changed` invalidate pending work; `notice` remains
+  informational. Optional `--voice` handles typed `audio_ready` / `voice_command`
+  events, starts stopped, and requires start to resume/reset. Stop waits for the
+  completed delivery/return. This is NOT an immediate or safety STOP.
+- New policies are staged/logged, then a later start confirms them for Qwen and
+  fresh inspection. Custom policies disable fast-pass. Wave/dance are disabled
+  placeholders. See `VOICE_CONTROL.md` for semantics, tests, and constraints.
+- Camera/audio settings must be verified before deployment. Hooks remain disabled
+  by default. The standalone camera diagnostic does NOT publish to the controller.
 - Continuous mode does not call the old overview-counting stage. It uses wrist
   camera `cam` at the saved home pose, so it does not assume the separate camera
   remains overhead. Side-camera height estimation/association belongs to its owner.
@@ -64,14 +67,15 @@ values. This does not restore the old brittle whole-scene object-count/center ga
 - Compare against the original home-view image with bounded illumination tolerance.
   Significant changes outside any verified expected-removal patch invalidate the
   batch. No model calls or new geometry are used by this comparison.
-- Following ACCEPT delivery only, allow the original object's small image patch
+- Following confirmed GOOD or REJECT placement, allow the original object's small image patch
   to disappear. Require actual disappearance, no residual segmented foreground,
   and resemblance to nearby original tabletop. Refuse patches overlapping another
   original object or containing other original foreground. Only that patch is
   updated; changes elsewhere are never silently accepted as a new baseline.
-- REJECT should return to the same scene. A visibly displaced/reoriented return
-  may trigger reinspection; we do not guess identity or silently accept it. HOLD,
-  misses and clearance refusals get no expected-removal exemption.
+- REJECT to a destination area now counts as removal, but reject-return and full-area
+  put-backs do not: the destination placement counter must have advanced on successful
+  delivery. A displaced/reoriented return may trigger reinspection; we do not guess
+  identity or silently accept it. HOLD, misses and refusals get no removal exemption.
 
 This is conservative image consistency checking, not robust object tracking.
 Shadows, glare, pose repeatability, low contrast, occlusion and segmentation errors
@@ -89,6 +93,10 @@ python main.py --continuous --fake
 # Live entry point, only with fresh operator authorization and workspace checks:
 # python main.py --continuous --confirm-motion
 ```
+
+With `--voice`, commands are consumed before any additional post-delivery home/open;
+while stopped, only a fresh start resumes, never a scene-change event. Gestures do not
+move at all. Pausing preserves placement counters and faults. See `VOICE_CONTROL.md`.
 
 Models load once for the process. Changing a model path requires a new process to
 ensure the new model is used; never start a second live controller alongside one.

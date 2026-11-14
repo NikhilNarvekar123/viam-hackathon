@@ -7,6 +7,9 @@ vlm_service_config: config/vlm_service.yaml
 pick_bolt_config: config/pick_bolt.yaml
 pick_after_inspection: true
 pick_target_source: pipeline  # pipeline: original boxes/verdicts, whole batch; picker: own selection/reclassification
+voice_control:
+  enabled: false  # Opt in with --continuous --voice. Starts paused; no gesture motion.
+  command_max_age_s: 30.0  # Stop is never expired. New start must follow acknowledgement.
 runtime_events:
   enabled: false  # Opt-in scaffold; existing pipeline behavior is unchanged by default.
   queue_capacity: 64
@@ -14,7 +17,18 @@ runtime_events:
   join_timeout_s: 2.0
   reset_events: [reset_batch, scene_changed]
   producers:
-    audio: {enabled: false}     # Inert hook until the audio adapter is implemented.
+    audio:
+      enabled: false  # --voice enables this producer and typed commands for continuous mode.
+      commands_enabled: false  # Diagnostic-only NOTICE events outside voice mode.
+      mic_name: microphone-3
+      device: NPU  # Explicit; unavailable device faults rather than silently changing placement.
+      # model_path: models/whisper-base-ov  # Verify installed model before deployment.
+      step_seconds: 1.0
+      window_seconds: 3.5
+      rms_threshold: 400.0
+      cooldown_s: 1.5
+      io_timeout_s: 10.0
+      print_transcripts: true
     overview: {enabled: false}  # Inert hook until change detection is implemented.
 overview:
   # Live cycles wait for explicit ENTER after inspection; fake mode stays noninteractive.

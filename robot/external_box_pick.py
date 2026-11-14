@@ -286,7 +286,12 @@ class ExternalBoxBatch:
             entry.update(status=result['status'],why=result.get('why'),picker_decision=result.get('decision'),
                          picker_target_xy_mm=np.asarray(result['xy']).tolist() if result.get('xy') is not None else None)
             save()  # retain incomplete attempt if delivery subsequently fails
+            placed_before = self.st.placed.get(route, 0)
             delivery=await execute_result(self.st,result,[])
+            # Placement counters advance only after successful destination release.
+            # Full-area put-backs and reject-return do NOT remove the source object.
+            entry['removed_from_source'] = (result['status']=='held'
+                and self.st.placed.get(route, 0)==placed_before+1)
             print(f"Batch crop {ident}: {delivery}"+(f" — {result['why']}" if result.get('why') else ''),flush=True)
             entry.update(delivery=delivery,sorting_executed=not self.fake and result['status']=='held')
             report['sorting_executed']|=entry['sorting_executed']

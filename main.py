@@ -134,6 +134,8 @@ async def wait_for_next_cycle(sorting_executed=False):
 async def run_overview_loop(config, fake=False, confirm_motion=False, cycles=None, image_path=None,
                             pause_between_cycles=None, inspect_only=False, event_runtime=None):
     from core.runtime_events import managed_runtime
+    if config.get('voice_control', {}).get('enabled'):
+        raise ValueError('Voice control requires --continuous')
     with managed_runtime(config.get('runtime_events',{}),event_runtime,fake=fake) as runtime:
         await _run_overview_loop(config,fake,confirm_motion,cycles,image_path,
                                  pause_between_cycles,inspect_only,runtime)
@@ -247,6 +249,8 @@ def main():
     parser.add_argument('--continuous',action='store_true',
                         help='Indefinite wrist/home validation loop: no ENTER pauses or cycle limit; no overview counting')
     parser.add_argument('--continuous-config',type=Path,default=ROOT/'config/continuous_pick.yaml')
+    parser.add_argument('--voice',action='store_true',
+                        help='Continuous mode only: listen for start/stop/policy; initially stopped, gestures disabled')
     parser.add_argument('--inspect-only',action='store_true',help='Disable the post-VLM pick/sort in the main pipeline')
     parser.add_argument('--pick-target-source',choices=['pipeline','picker'],
                         help='pipeline: supplied boxes/verdicts for the batch; picker: own selection/reclassification')
@@ -260,6 +264,8 @@ def main():
                         help="Explicitly authorize real arm/gripper motion")
     parser.add_argument("--config", type=Path, default=ROOT / "config/config.yaml")
     args = parser.parse_args()
+    if args.voice and not args.continuous:
+        parser.error('--voice requires --continuous')
     if args.continuous and (args.stage!='overview' or args.overview_image or args.inspect_only
                            or args.pick_target_source=='picker' or args.n is not None
                            or args.pause_between_cycles is not None):
@@ -274,6 +280,9 @@ def main():
         parser.error("--overview-image requires the overview stage without --fake")
     with args.config.open() as stream:
         config = yaml.safe_load(stream)
+    if args.voice:config.setdefault('voice_control',{})['enabled']=True
+    if config.get('voice_control',{}).get('enabled') and not args.continuous:
+        parser.error('voice_control.enabled requires --continuous')
     if args.pick_target_source is not None:config['pick_target_source']=args.pick_target_source
     try:
         if args.continuous:

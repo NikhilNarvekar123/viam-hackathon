@@ -3,65 +3,23 @@ import asyncio
 from collections import deque
 import json
 import logging
+import math
 from pathlib import Path
-import re
 import time
 import traceback
 
 import numpy as np
 
 from core.runtime_events import EventKind, ProducerContext
+from core.voice_control import normalize_transcript, parse_voice_command
 
 LOG = logging.getLogger(__name__)
 
 
-def normalize_transcript(text: str) -> str:
-    cleaned = re.sub(r"[^a-z0-9\s]", " ", text.lower())
-    return re.sub(r"\s+", " ", cleaned).strip()
-
-
-def parse_voice_command(raw_text: str) -> dict | None:
-    """Map raw Whisper transcript directly to hello / start / stop / dance / new_policy."""
-    norm = normalize_transcript(raw_text)
-    if not norm:
-        return None
-
-    # 1. "New policy <rule>" (or "New policies <rule>")
-    policy_match = re.search(
-        r"\bnew\s+polic(?:y|ies)[:,.\-\s]+(.+)$",
-        raw_text.strip(),
-        flags=re.IGNORECASE,
-    )
-    if policy_match:
-        policy_text = policy_match.group(1).strip()
-        if policy_text:
-            return {
-                "command": "new_policy",
-                "policy": policy_text,
-                "raw_text": raw_text.strip(),
-            }
-
-    # 2. "Start" / "Starts"
-    if re.search(r"\b(?:starts?|started|starting)\b", norm):
-        return {"command": "start", "raw_text": raw_text.strip()}
-
-    # 3. "Stop" / "Stops"
-    if re.search(r"\b(?:stops?|stopped|stopping)\b", norm):
-        return {"command": "stop", "raw_text": raw_text.strip()}
-
-    # 4. "Dance" / "Dancer" / "Dancing"
-    if re.search(r"\b(?:dances?|dancer|dancing)\b", norm):
-        return {"command": "dance", "raw_text": raw_text.strip()}
-
-    # 5. "Hello" / "Halo" / "Hi" / "Hey"
-    if re.search(r"\b(?:hello|halo|helo|hi|hey)\b", norm):
-        return {"command": "hello", "raw_text": raw_text.strip()}
-
-    return None
-
-
 def _prepare_16k_mono(raw_bytes: bytes, sample_rate: int, num_channels: int) -> tuple[np.ndarray, float]:
     """Convert raw PCM16 bytes to 16 kHz mono float32 in [-1, 1] and compute RMS amplitude."""
+    if sample_rate <= 0 or num_channels < 1:
+        raise ValueError('Invalid microphone sample rate/channels')
     if not raw_bytes:
         return np.empty(0, dtype=np.float32), 0.0
     pcm = np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32)
@@ -101,7 +59,7 @@ def _load_whisper_pipeline(settings: dict, root: Path):
 
     model_dir = _resolve_model_dir(settings, root)
     cache_tag = model_dir.name
-    cache_dir = (root / settings.get("cache_dir", f"/tmp/speech-cache/{cache_tag}-npu")).resolve()
+    cache_dir = (root / settings.get("cache_dir", f"/tmp/speech-cache/{cache_tag}-{device.lower()}")).resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     pipe = genai.WhisperPipeline(str(model_dir), device, CACHE_DIR=str(cache_dir))
@@ -125,20 +83,29 @@ async def _listen_loop(context: ProducerContext, root: Path):
     rms_threshold = float(settings.get("rms_threshold", 400.0))
     cooldown_s = float(settings.get("cooldown_s", 1.5))
     debug_print = bool(settings.get("print_transcripts", True))
+    timeout_s = float(settings.get('io_timeout_s', 10.0))
+    if (not all(math.isfinite(v) for v in (step_s, window_s, rms_threshold, cooldown_s, timeout_s))
+            or not 0 < step_s <= window_s <= 30 or window_s < 1.5
+            or not 0 <= rms_threshold <= 32768 or not 0 <= cooldown_s <= 30
+            or timeout_s <= max(step_s, 0.2)):
+        raise ValueError('Invalid audio capture/window/timeout settings')
 
     if debug_print:
         print(f"[AUDIO] Loading WhisperPipeline on {settings.get('device', 'NPU')}...", flush=True)
     pipe, gen_cfg, model_name = await asyncio.to_thread(_load_whisper_pipeline, settings, root)
 
-    machine = await connect(load_credentials(root / ".env"))
+    machine = await asyncio.wait_for(connect(load_credentials(root / ".env")), timeout_s)
     last_command_key = None
     last_command_ts = 0.0
+    sequence = 0
+    commands_enabled = bool(settings.get('commands_enabled', False))
     max_samples = int(16000 * window_s)
     ring = deque(maxlen=max_samples)
+    sample_times = deque(maxlen=max_samples)
 
     try:
         mic = AudioIn.from_robot(machine, mic_name)
-        props = await mic.get_properties()
+        props = await asyncio.wait_for(mic.get_properties(), timeout_s)
         sr = getattr(props, "sample_rate_hz", 16000) or 16000
         ch = getattr(props, "num_channels", 1) or 1
         if debug_print:
@@ -148,30 +115,36 @@ async def _listen_loop(context: ProducerContext, root: Path):
                 flush=True,
             )
 
-        async for _ in await mic.get_audio(codec="pcm16", duration_seconds=0.2, previous_timestamp_ns=0):
-            if context.stop.is_set():
-                return
-
-        while not context.stop.is_set():
+        async def capture(seconds):
             chunks = []
-            stream = await mic.get_audio(codec="pcm16", duration_seconds=step_s, previous_timestamp_ns=0)
+            stream = await mic.get_audio(codec="pcm16", duration_seconds=seconds, previous_timestamp_ns=0)
             async for chunk in stream:
                 if context.stop.is_set():
                     break
                 chunks.append(chunk.audio.audio_data)
+            return b"".join(chunks)
 
+        await asyncio.wait_for(capture(0.2), timeout_s)
+        if commands_enabled and not context.publish(EventKind.AUDIO_READY, json.dumps(
+                dict(model=model_name, device=settings.get('device', 'NPU'), microphone=mic_name))):
+            return
+        while not context.stop.is_set():
+            capture_started = time.monotonic()
+            raw_bytes = await asyncio.wait_for(capture(step_s), timeout_s)
             if context.stop.is_set():
                 break
-
-            raw_bytes = b"".join(chunks)
             step_f32, step_rms = _prepare_16k_mono(raw_bytes, sr, ch)
             if len(step_f32) == 0:
                 continue
 
             ring.extend(step_f32.tolist())
+            sample_times.extend([capture_started] * len(step_f32))
             if step_rms < rms_threshold or len(ring) < int(16000 * 1.5):
                 continue
 
+            # Use the oldest acquisition in this window, not inference completion:
+            # buffered pre-stop speech must never count as a fresh confirming start.
+            heard_at = sample_times[0]
             window_audio = list(ring)
             result = await asyncio.to_thread(pipe.generate, window_audio, gen_cfg)
             transcript = " ".join(result.texts).strip()
@@ -192,9 +165,31 @@ async def _listen_loop(context: ProducerContext, root: Path):
             last_command_ts = now_mono
 
             ring.clear()
-            context.publish(EventKind.NOTICE, json.dumps(parsed))
+            sample_times.clear()
+            sequence += 1
+            parsed.update(sequence=sequence, heard_at=heard_at)
+            kind = EventKind.VOICE_COMMAND if commands_enabled else EventKind.NOTICE
+            if not context.publish(kind, json.dumps(parsed)):
+                return
     finally:
-        await disconnect(machine)
+        await asyncio.wait_for(disconnect(machine), timeout_s)
+
+
+async def _run_until_stopped(context, root):
+    """Cancel blocked microphone waits on shutdown; native inference cannot be forcibly killed."""
+    task = asyncio.create_task(_listen_loop(context, root))
+    try:
+        while not task.done() and not context.stop.is_set():
+            await asyncio.sleep(0.05)
+        if context.stop.is_set():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        else:
+            await task  # Propagate producer faults to EventRuntime.
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 def run(context: ProducerContext):
@@ -207,7 +202,7 @@ def run(context: ProducerContext):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(_listen_loop(context, root))
+        loop.run_until_complete(_run_until_stopped(context, root))
     except Exception:
         print("[AUDIO ERROR] Listener crashed:\n" + traceback.format_exc(), flush=True)
         raise

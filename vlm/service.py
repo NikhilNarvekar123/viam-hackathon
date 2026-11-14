@@ -66,6 +66,7 @@ async def decide_wrist_objects(wrist, settings, root, fake=False):
             record=dict(id=ident,bbox_xyxy=anomaly['bbox_xyxy'],anomaly=anomaly,vlm=vlm,
                         vlm_image_type=None if passed or vlm.get('skipped') else 'neighbor_masked_square_resized',
                         routing_policy=settings.get('routing_policy','disagreement_hold'),
+                        inspection_policy=settings.get('inspection_policy'),
                         **routing)
             records.append(record)
             print(f"Object {ident}: Anomalib={anomaly['score']:.3f}, VLM={vlm['action']}, "
@@ -76,6 +77,7 @@ async def decide_wrist_objects(wrist, settings, root, fake=False):
             draw.text((max(0,l),max(0,t-14)),f"#{ident} {record['final_action']}",fill=color,stroke_width=1,stroke_fill='black')
             (folder/'vlm_results.json').write_text(json.dumps(dict(fake=fake,service=settings['service_name'],
                 status=status,prompt=settings.get('prompt',status.get('prompt') if status else None),
+                inspection_policy=settings.get('inspection_policy'),
                 objects=records,actions_executed=False),indent=2,allow_nan=False)+'\n')
             annotated.save(folder/'decisions.png')
         if not records:
