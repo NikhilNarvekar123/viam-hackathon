@@ -100,6 +100,17 @@ def test_stage1_threshold_boundary(score,expected):
                        {'stage1_fast_pass':True})==expected
 
 
+@pytest.mark.parametrize('score,expected',[(.599999,True),(.60,False),(.600001,False),(float('nan'),False)])
+def test_configured_v3_fast_pass_boundary(score,expected):
+    import yaml
+    from vlm.evidence import stage1_pass
+    root=Path(__file__).resolve().parents[1]
+    model=yaml.safe_load((root/'config/wrist_inspection.yaml').read_text())['model']
+    vlm=yaml.safe_load((root/'config/vlm_service.yaml').read_text())
+    assert model['threshold']==.60
+    assert stage1_pass(dict(score=score,threshold=model['threshold'],classification='normal'),vlm)==expected
+
+
 def test_disabled_vlm_never_connects_and_holds_escalated_objects(tmp_path):
     Image.new('RGB',(40,40)).save(tmp_path/'frame.png')
     wrist={'output_dir':str(tmp_path),'objects':[{'id':1,'score':1.0,'threshold':.75,
