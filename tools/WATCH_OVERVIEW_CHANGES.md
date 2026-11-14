@@ -17,13 +17,21 @@ source .venv/bin/activate
 python tools/watch_overview_changes.py --record --seconds 120
 ```
 
-Use an interactive terminal (for remote use: `ssh -t viam-nuc`). Withdraw hands and
-press ENTER to accept the initial clear reference. Add, remove, or move an object,
-then withdraw hands. At default 2 Hz / 3 persistent frames, persistent changes
-should report `SCENE_CHANGED (diagnostic only)` after roughly 1–1.5 seconds plus
-capture/processing time. These thresholds are uncalibrated, not a timing guarantee.
+No keyboard input is required. The first capture becomes the reference, then the
+runner polls **every 2 seconds** (0.5 Hz). Add, remove, or move an object, then
+withdraw hands. With the default 3 persistent samples, confirmation takes roughly
+4–6 seconds plus capture/processing time. These thresholds are uncalibrated, not
+a timing guarantee. Use `--persistence 1` only for single-sample diagnostics (more
+susceptible to noise and hands). Ctrl+C exits; the duration defaults to 120 seconds.
 
-Commands require ENTER:
+After each `SCENE_CHANGED`, automatic diagnostic mode accepts that **same captured
+frame** as its new reference and continues watching. No later capture is silently
+swallowed as a reference. This is a diagnostic acknowledgment only, NOT the
+production controller reset/inspection handshake. The core detector and production
+runtime are unchanged. Do not reuse this auto-acknowledgment in the live picker.
+
+Optional `--manual` mode requires an interactive terminal and initial ENTER. It
+provides these commands, each followed by ENTER:
 
 - `r`: explicitly accept the next clear capture as a new reference and rearm.
   Use only once the workspace is stable and you have reviewed the change.
@@ -32,8 +40,9 @@ Commands require ENTER:
   an obscured interval can then trigger detection.
 - `q` or Ctrl+C: exit. Duration defaults to 120 seconds.
 
-One event is reported per reference epoch. A changed scene remains `latched` until
-`r`; there is no automatic rebaseline after events or after clearing occlusion.
+In `--manual` mode only, one event is reported per reference epoch and a changed
+scene remains `latched` until `r`. Clearing occlusion with `c` preserves the old
+reference; it never automatically accepts changes made during the obscured interval.
 
 ## Masks and tuning
 
@@ -58,6 +67,8 @@ The printed `logs/overview_changes/watch_<timestamp>/` directory contains:
 - `workspace.png`, `excluded.png`: processing masks.
 - `detections.jsonl`: status, bounds, hypothetical event, and timing per sample.
 - With `--record`: every processing frame and `replay.json` for the offline tool.
+  Automatic rearming adds an explicit reference operation using the same frame,
+  so replay reproduces subsequent changes instead of remaining latched.
 
 ```bash
 python tools/replay_overview_events.py logs/overview_changes/watch_<timestamp>/replay.json
@@ -70,13 +81,13 @@ this is not an OpenCV GUI window (the installed OpenCV may be headless).
 ## Fake smoke test
 
 ```bash
-python tools/watch_overview_changes.py --fake --record --seconds 5
+python tools/watch_overview_changes.py --fake --hz 2 --record --seconds 5
 ```
 
 Synthetic frames show a fixed base and an object appearing after three captures.
-Expect one diagnostic `SCENE_CHANGED`, then `latched`. Fake mode does not read
-credentials/config or access camera/model resources. It validates wiring, not real
-camera accuracy.
+Expect one diagnostic `SCENE_CHANGED`, automatic rearming, then `unchanged`.
+Fake mode does not read credentials/config or access camera/model resources. It
+validates wiring, not real camera accuracy.
 
 ## Limits
 

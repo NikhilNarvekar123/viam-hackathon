@@ -1,7 +1,8 @@
 """Live camera -> CPU scene-change diagnostics. NEVER moves or publishes events.
 
+Polls every 2 seconds and automatically rearms after confirmed changes.
 Keep the robot stationary. This does NOT automatically identify arm/hand occlusion.
-Commands (followed by ENTER): o=obscured, c=clear, r=new reference, q=quit.
+Optional --manual mode: o=obscured, c=clear, r=new reference, q=quit (+ ENTER).
 """
 import argparse
 import asyncio
@@ -28,10 +29,11 @@ from monitors.overview_detection import DetectionSettings, OverviewChangeDetecto
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument('--fake', action='store_true', help='Synthetic frames; no hardware/credentials')
+    result.add_argument('--manual', action='store_true', help='Opt-in interactive reference/occlusion controls')
     result.add_argument('--camera', default='overview-cam')
     result.add_argument('--config', type=Path, default=ROOT / 'config/config.yaml')
     result.add_argument('--width', type=int, default=640, help='Maximum processing width; never upscale')
-    result.add_argument('--hz', type=float, default=2, help='Sequential polling rate (0, 10]')
+    result.add_argument('--hz', type=float, default=0.5, help='Polling rate (0, 10]; default 0.5 = every 2 seconds')
     result.add_argument('--seconds', type=float, default=120, help='Maximum monitoring duration')
     result.add_argument('--timeout', type=float, default=10, help='Connection/capture timeout; no retry')
     result.add_argument('--threshold', type=float, default=25)
@@ -128,7 +130,11 @@ async def watch(args, camera, command=None):
     folder = args.out / ('watch_' + stamp)
     folder.mkdir(parents=True, exist_ok=False)
     print(f'Diagnostics only; NO robot events/actions. Output: {folder}', flush=True)
-    print('Commands + ENTER: o=obscured, c=clear, r=accept fresh reference, q=quit.', flush=True)
+    print(f'Polling every {1 / args.hz:g} seconds; {args.persistence} consecutive changed samples to confirm.', flush=True)
+    if args.manual:
+        print('Commands + ENTER: o=obscured, c=clear, r=accept fresh reference, q=quit.', flush=True)
+    else:
+        print('Automatic reference/rearm; no keyboard input required. Ctrl+C to quit.', flush=True)
     print('No automatic arm/hand detection. Unmarked occlusion can cause false changes.', flush=True)
     detector, clear, reference_pending = None, True, True
     samples = []
@@ -170,6 +176,7 @@ async def watch(args, camera, command=None):
                     Image.fromarray(exclusion.astype(np.uint8) * 255).save(folder / 'excluded.png')
                     print(f'Processing {image.width}x{image.height}; ROI/exclusions use these pixels.', flush=True)
                 operation = 'reference' if reference_pending else 'observe'
+                auto_rearmed = False
                 if reference_pending:
                     detector.set_reference(rgb, clear_view=clear)
                     reference_pending = False
@@ -181,14 +188,23 @@ async def watch(args, camera, command=None):
                     record = asdict(result)
                     record['would_publish'] = 'scene_changed' if result.publish_scene_changed else None
                     if result.publish_scene_changed:
+                        suffix = ('Clear hands then r + ENTER to rearm.' if args.manual
+                                  else 'Automatically rearming and continuing.')
                         print(f'SCENE_CHANGED (diagnostic only): {result.reason}; '
-                              f'boxes={result.boxes_xyxy}. Clear hands then r + ENTER to rearm.', flush=True)
+                              f'boxes={result.boxes_xyxy}. {suffix}', flush=True)
                         image.save(folder / f'change_{index:06d}.png')
+                        if not args.manual:
+                            # Diagnostic mode ONLY: acknowledge the exact observed
+                            # frame, not a later capture that could swallow changes.
+                            # This is NOT the production controller reset handshake.
+                            detector.set_reference(rgb, clear_view=clear)
+                            image.save(folder / f'reference_{index:06d}.png')
+                            auto_rearmed = True
                 if record['status'] != previous_status:
                     print(f"[{index:06d}] {record['status']}", flush=True)
                     previous_status = record['status']
                 record.update(sample=index, clear_view=clear, operation=operation, fake=args.fake,
-                              elapsed_s=time.monotonic() - started,
+                              auto_rearmed=auto_rearmed, elapsed_s=time.monotonic() - started,
                               capture_and_process_ms=(time.monotonic() - tick) * 1000)
                 log.write(json.dumps(record, allow_nan=False) + '\n')
                 log.flush()
@@ -202,6 +218,8 @@ async def watch(args, camera, command=None):
                     filename = f'frame_{index:06d}.png'
                     image.save(folder / filename)
                     samples.append({'image': filename, 'clear_view': clear, 'operation': operation})
+                    if auto_rearmed:
+                        samples.append({'image': filename, 'clear_view': clear, 'operation': 'reference'})
                 index += 1
                 await asyncio.sleep(max(0, 1 / args.hz - (time.monotonic() - tick)))
         finally:
@@ -212,7 +230,7 @@ async def watch(args, camera, command=None):
 
 async def run(args):
     async with source(args) as camera:
-        return await watch(args, camera, None if args.fake else terminal_command)
+        return await watch(args, camera, terminal_command if args.manual and not args.fake else None)
 
 
 def main():
@@ -221,12 +239,13 @@ def main():
     try:
         validate(args)
         if not args.fake:
-            if not sys.stdin.isatty():
-                raise ValueError('Live diagnostics require an interactive terminal (SSH: ssh -t viam-nuc)')
             print('Camera-only diagnostic. Keep the arm stationary; stop other picking/teleop controllers.')
             print('Leave the workspace visible, withdraw hands, and keep the camera fixed.')
-            if input('ENTER to capture the initial reference, or q + ENTER to cancel: ').strip():
-                return
+            if args.manual:
+                if not sys.stdin.isatty():
+                    raise ValueError('--manual requires an interactive terminal (SSH: ssh -t viam-nuc)')
+                if input('ENTER to capture the initial reference, or q + ENTER to cancel: ').strip():
+                    return
         asyncio.run(run(args))
     except KeyboardInterrupt:
         cli.exit(130, 'Stopped camera diagnostics. No robot commands issued.\n')

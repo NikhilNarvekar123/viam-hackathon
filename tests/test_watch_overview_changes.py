@@ -13,7 +13,7 @@ from tools.replay_overview_events import replay
 
 
 def options(tmp_path, *extra):
-    return watch.parser().parse_args(['--fake', '--hz', '10', '--seconds', '5',
+    return watch.parser().parse_args(['--fake', '--manual', '--hz', '10', '--seconds', '5',
                                      '--out', str(tmp_path), *extra])
 
 
@@ -50,6 +50,41 @@ def test_manual_occlusion_preserves_reference_until_clear_and_r_rearms(tmp_path)
     assert rows[9]['status'] == 'reference'
     assert rows[10]['status'] == 'unchanged'
     assert [r['status'] for r in rows] == [r['status'] for r in replay(folder/'replay.json')]
+
+
+def test_defaults_poll_every_two_seconds_without_manual_input():
+    args = watch.parser().parse_args([])
+    assert args.hz == 0.5
+    assert not args.manual
+
+
+def test_automatic_mode_reports_multiple_changes_and_replay_retains_rearms(tmp_path):
+    args = options(tmp_path, '--record')
+    args.manual = False
+    class Camera(watch.SyntheticSource):
+        async def image(self):
+            image = await super().image()
+            # Add at sample 3, then remove at sample 8.
+            if self.index > 8:
+                image.paste((160, 160, 160), (140, 90, 161, 111))
+            return image
+    folder = asyncio.run(watch.watch(args, Camera(), commands([None] * 13 + ['q'])))
+    rows = [json.loads(line) for line in (folder/'detections.jsonl').read_text().splitlines()]
+    events = [row for row in rows if row['would_publish']]
+    assert [row['sample'] for row in events] == [5, 10]
+    assert all(row['auto_rearmed'] for row in events)
+    assert not any(row['status'] == 'latched' for row in rows)
+    saved = list(replay(folder/'replay.json'))
+    assert sum(row['would_publish'] == 'scene_changed' for row in saved) == 2
+    assert sum(row['operation'] == 'reference' for row in saved) == 3
+
+
+def test_automatic_run_does_not_read_terminal(tmp_path):
+    args = options(tmp_path)
+    args.manual = False
+    args.seconds = .01
+    with patch.object(watch, 'terminal_command', side_effect=AssertionError('unexpected stdin')):
+        asyncio.run(watch.run(args))
 
 
 def test_capture_timeout_is_not_retried_and_recording_is_finalized(tmp_path):
