@@ -13,15 +13,16 @@ response_schema: grounded_inspection
 # Per-request prompt; no anomaly score, heatmap or annotation is supplied.
 prompt: >-
   Examine this close-up image of a single metal fastener. In one short sentence
-  (observation), describe the surface material, color, and condition across the
-  fastener's head, shaft, and edges. A normal fastener is made entirely of clean,
-  bare, uniform metal. Set defect: true if any foreign material, non-metallic wrap,
-  coating, discoloration, corrosion, debris, or physical deformation is present
-  anywhere on the fastener; set defect: false only if the entire fastener is clean,
-  bare, undamaged metal.
-  Other detected objects were replaced with tabletop background; ignore those fill edges.
-  Return ONLY JSON with exactly two fields, in this order: observation, defect.
-  observation must be a short sentence; defect must be a JSON boolean, not a string.
+  (observation), describe the surface material, color, and condition across the fastener's
+  head, shaft, and edges. A normal fastener is made entirely of clean, bare, uniform
+  metal. Set defect: true if any foreign material, non-metallic wrap, coating,
+  discoloration, corrosion, debris, or physical deformation is present anywhere on the
+  fastener. Any blue, green, red or yellow tape, paint, cap, band or patch anywhere on the
+  fastener is a defect, even if it looks shiny or metallic. Set defect: false only if the
+  entire fastener is clean, bare, undamaged metal. Other detected objects were replaced
+  with tabletop background; ignore those fill edges. Return ONLY JSON with exactly two
+  fields, in this order: observation, defect. observation must be a short sentence; defect
+  must be a JSON boolean, not a string.
 # Replaces (does not append to) the default defect criteria after voice confirmation.
 # The controller substitutes only the bounded inspection policy; JSON routing stays fixed.
 custom_policy_prompt: >-
