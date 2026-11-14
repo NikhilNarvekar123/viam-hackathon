@@ -39,7 +39,7 @@ auto_crop:
   orientation_min_ratio: 2.0
   max_foreground_fraction: 0.4
 model:
-  path: models/anomalib_v2_20261113T203526Z/model.xml
+  path: models/anomalib_v3_20261114T150012Z/model.xml
   device: CPU
   cache_dir: models/openvino_cache
   image_size: 128
