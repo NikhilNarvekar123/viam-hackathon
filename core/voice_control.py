@@ -22,14 +22,17 @@ def normalize_transcript(text):
 
 
 def parse_voice_command(raw_text):
-    """Whole utterances only: require robot/robo for hello/start/stop; standalone for dance/new_policy."""
+    """Whole utterances only: 'new policy <rule> over', standalone 'dance', and robot/robo hello/start/stop."""
     if not isinstance(raw_text, str) or len(raw_text) > 2048:
         return None
     text = raw_text.strip()
-    policy = re.fullmatch(r'(?:please\s+)?new\s+polic(?:y|ies)\b\s*[:.,-]?\s*(.+)',
-                          text, flags=re.IGNORECASE | re.DOTALL)
+    policy = re.search(
+        r'(?:please\s+)?new\s+polic(?:y|ies)\b\s*[:.,-]?\s*(.+?)\s*\bover\b[.!?]*\s*$',
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
     if policy:
-        rule = policy.group(1).lstrip(' \t:.,-').strip()
+        rule = policy.group(1).strip(' \t:.,-')
         if rule and len(rule) <= MAX_POLICY_CHARS and not any(ord(c) < 32 for c in rule):
             return dict(command='new_policy', policy=rule, raw_text=text)
         return None
