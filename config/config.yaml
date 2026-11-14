@@ -45,8 +45,8 @@ overview:
     gripper_name: gripper
     gripper_open_position: 850
     gripper_open_tolerance: 30
-    speed_deg_s: 120.0
-    acceleration_deg_s2: 120.0
+    speed_deg_s: 180.0  # xArm6 rated max joint speed
+    acceleration_deg_s2: 180.0
     timeout_s: 120
     joint_tolerance_deg: 1.0
     settle_s: 0.5
