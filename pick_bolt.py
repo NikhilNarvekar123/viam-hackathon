@@ -916,9 +916,9 @@ def table_xy(info: dict, K: Intrinsics, xs, ys) -> np.ndarray:
     return (rays @ info["R"].T + info["t"])[:, :2]
 
 
-def summit(info: dict, K: Intrinsics, xy, radius_mm: float = SUMMIT_RADIUS_MM) -> Optional[Tuple[np.ndarray, float]]:
-    """Top of the tallest thing within radius_mm of world xy -> (world xy of the top, its height above the table),
-    or None if nothing rises there. The top's own 3D points give its xy: no table-plane parallax, which puts the
+def summit(info: dict, K: Intrinsics, xy, radius_mm: float = SUMMIT_RADIUS_MM) -> Optional[Tuple[np.ndarray, float, Optional[float]]]:
+    """Top of the tallest thing within radius_mm of world xy -> (world xy of the top, its height above the table,
+    direction in degrees the top is elongated along, or None if it is round), or None if nothing rises there. The top's own 3D points give its xy: no table-plane parallax, which puts the
     top of an 80 mm bolt 150 mm off the camera axis about 30 mm too far out."""
     h = np.nan_to_num(info["height"], nan=0.0)
     ys, xs = np.nonzero(info["raised"] & info["valid"])
@@ -931,7 +931,11 @@ def summit(info: dict, K: Intrinsics, xy, radius_mm: float = SUMMIT_RADIUS_MM) -
         return None
     W, hh = W[near], h[ys, xs][near]
     top = float(np.sort(hh)[-SUMMIT_MIN_PX])        # not the single highest pixel: a few stray ones do not set it
-    return W[hh >= top - SUMMIT_BAND_MM, :2].mean(axis=0), top
+    face = W[hh >= top - SUMMIT_BAND_MM, :2]
+    # A tape flag on a bolt head sits as high as the head and drags the mean off the shank: report its direction.
+    vals, vecs = np.linalg.eigh(np.cov(face.T)) if len(face) > 2 else (np.ones(2), np.eye(2))
+    axis = math.degrees(math.atan2(vecs[1, 1], vecs[0, 1])) if vals[1] > 2.25 * max(vals[0], 1e-9) else None
+    return face.mean(axis=0), top, axis
 
 
 def raised_world(info: dict, K: Intrinsics, limit: int = 20000) -> np.ndarray:
@@ -1377,7 +1381,7 @@ async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool =
                   f"from the target (standing if >= {STANDING_MIN_TOP_MM:.0f} mm up and <= {STANDING_AIM_MM:.0f} mm off)")
         if up is not None and up[1] >= STANDING_MIN_TOP_MM \
                 and np.linalg.norm(up[0] - np.asarray(target_world_xy)[:2]) <= STANDING_AIM_MM:
-            return await pick_standing(st, stop_at, info, objs, up[0], up[1])
+            return await pick_standing(st, stop_at, info, objs, up[0], up[1], up[2])
     cands = [o for o in objs if o.kind in PICK_KINDS]
     if roi_target is not None:
         try:cands=[roi_target(info)]
@@ -1429,7 +1433,7 @@ async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool =
     if target_world_xy is None and target.kind == "bolt-standing":
         up = summit(info, st.K, base)
         if up is not None and up[1] >= STANDING_MIN_TOP_MM:
-            return await pick_standing(st, stop_at, info, objs, up[0], up[1])
+            return await pick_standing(st, stop_at, info, objs, up[0], up[1], up[2])
     # Check the surroundings before going anywhere near: the close-up pose already has the fingertips at 186 mm,
     # lower than the box rim.
     scan_plan = grasp_plan(target.length_mm, target.width_mm, target.height_mm, tip_clearance_mm=args.tip_clearance_mm)
@@ -1561,13 +1565,17 @@ async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool =
     return dict(out, status="held" if holding.is_holding_something else "missed")
 
 
-async def pick_standing(st: Station, stop_at: str, info: dict, objs: list, top_xy, top_h: float) -> dict:
+async def pick_standing(st: Station, stop_at: str, info: dict, objs: list, top_xy, top_h: float,
+                       top_axis_deg: Optional[float] = None) -> dict:
     """A standing part, from the scan: open jaws over its top, straight down around it, close, lift. No close-up
     (too near for depth on the top). Fingertips go to STANDING_TIP_MM, higher for parts taller than the gripper
     body clears there, and arrive from TOP_CLEAR_MM above the top."""
     args = st.args
     x, y = float(top_xy[0]), float(top_xy[1])
-    theta = neutral_theta(x, y)          # a round shank: any jaw direction; this one keeps the camera outward
+    # A round top: any jaw direction; this one keeps the camera outward. An elongated top (a tape flag): the jaws
+    # close ALONG it, so the closing jaws slide the shank to the middle however far the flag pulled the aim off.
+    theta = neutral_theta(x, y) if top_axis_deg is None else \
+        grasp_theta(top_axis_deg + 90.0, args.jaw_axis, near=neutral_theta(x, y))
     tip = STANDING_TIP_MM + max(0.0, top_h - STANDING_BODY_CLEAR_MM)
     grasp_z = TABLE_Z_EXPECTED + tip + args.tip_offset_mm
     hover_z = TABLE_Z_EXPECTED + max(tip + APPROACH_MM, top_h + TOP_CLEAR_MM) + args.tip_offset_mm
@@ -2407,6 +2415,19 @@ def self_check():
     assert arm.looks == ["scan"], arm.looks                                                       # no close-up
     assert moves["pre-grasp above the standing part"][2] - TIP_OFFSET_MM >= 80 + TOP_CLEAR_MM - 3, moves
     assert abs(moves["descend around the standing part"][2] - TIP_OFFSET_MM - STANDING_TIP_MM) < 1, moves
+    # The same bolt with a tape flag on its head, as high as the head, sticking out along image u (world -y; the
+    # station's 14 Nov miss): the jaws close along the flag, so they slide the shank to the middle.
+    up_depth[266:272, 299:333] = 360.0
+    flagged = Upright()
+    with open(os.devnull, "w") as quiet:
+        out_, sys.stdout = sys.stdout, quiet
+        try:
+            res = asyncio.run(pick_one(flagged, "pick", [], target_world_xy=np.array([400.0 - 15.0, 0.0]), target_tolerance_mm=15.0,
+                                       roi_target=lambda info: (_ for _ in ()).throw(ValueError("Insufficient ROI foreground"))))
+        finally:
+            sys.stdout = out_
+    jaws = np.array([math.sin(math.radians(res["theta"])), math.cos(math.radians(res["theta"]))])   # gripper y, jaws close along it
+    assert res["status"] == "held" and abs(jaws[1]) > 0.99, res
     # End to end through the detector: a 60 x 55 x 12 mm block on a flat table, camera 440 mm straight above.
     depth = np.full((480, 640), 440.0)
     depth[200:275, 280:362] = 428.0                   # 82 x 75 px at 428 mm = 58 x 53 mm
