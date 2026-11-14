@@ -16,10 +16,10 @@ GO_HOME_FIRST: true
 BOX_HINT_XY: null
 GOOD_XY:
 - 290
-- 330
+- 295
 REJECT_XY:  # other end of the table from GOOD_XY; its places grow toward -y
 - 290
-- -350
+- -330
 HOLD_XY: null
 ANOMALY_SERVICE: null
 ANOMALY_REJECT: 0.5
@@ -107,11 +107,11 @@ STANDING_TIP_MM: 27.0
 BODY_CLEAR_MM: 80.0
 CAM_CLEAR_MM: 65.0
 SPOT_KEEPOUT_MM: 150.0
-PLACE_PITCH_MM: 35.0
-PLACE_COLS: 5  # along +x, toward the end of the table
-PLACE_ROWS: 2  # toward the side: the wall-side obstacle starts at y=450
-PLACE_GAP_MM: 8.0
-JAW_SWEEP_MM: 55.0
+PLACE_PITCH_MM: 17.5  # dense candidate places: 4 long bolts fit in GOOD instead of 2
+PLACE_COLS: 9  # along +x, toward the end of the table (x 290..430)
+PLACE_ROWS: 5  # toward the side; GOOD rows stop at y=365: the wall-side obstacle starts at y=450
+PLACE_GAP_MM: 6.0
+JAW_SWEEP_MM: 45.0
 JAW_PAD_MM: 20.0
 PLACE_CARRY_MIN_Z: 200.0
 TAPE_MAX_MM: 2.0

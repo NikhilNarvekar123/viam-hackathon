@@ -175,7 +175,7 @@ def test_reset_during_delivery_waits_for_return_before_discarding_remaining(tmp_
             first,=report['objects']
             assert first['crop_id']==1
             release=next(a['open_at'] for a in first['simulated_actions'] if 'open_at' in a)
-            assert release[:2]==first['binding']['table_point_world_mm'][:2]
+            assert release[:2]==batch.settings['reject_xy']  # a reject goes to the reject area before the reset is honoured
     asyncio.run(exercise())
 
 

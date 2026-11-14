@@ -1,6 +1,6 @@
 # Opt-in only: main.py --stage pick --confirm-motion. Not physically validated by this integration.
-good_xy: [290.0, 330.0]  # GOOD, taped +y zone; places x 290..395, y 330..365: the claws must stay clear of wall-side (y>=450).
-reject_xy: [290.0, -350.0]  # REJECT, taped -y zone (tape x 280..430, y -490..-330); places y -350..-385. null = put back.
+good_xy: [290.0, 295.0]  # GOOD, taped +y zone; places x 290..430, y 295..365: claws stay clear of wall-side (y>=450).
+reject_xy: [290.0, -330.0]  # REJECT, taped -y zone; places x 290..430, y -330..-400. null = put back.
 hold_xy: null            # Inspection errors/HOLD leave the item unpicked.
 max_good_places: 12      # Stop before exceeding the controller's three-column/four-row place area.
 mapping_config: config/crop_target_mapping.yaml
