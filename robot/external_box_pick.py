@@ -263,8 +263,11 @@ class ExternalBoxBatch:
                 async def verdict(st,item,target,info,objects):
                     if time.monotonic()-self.captured_at>self.settings['max_batch_age_s']:
                         return 'hold',None,0.
-                    actual,_=st.locate(target,info)
-                    if np.linalg.norm(actual[:2]-xy)>self.settings['target_match_radius_mm']:
+                    # A standing part has no blob (target None): pick_one aimed at its top within STANDING_AIM_MM.
+                    standing=target is None and item.get('kind')=='bolt-standing'
+                    actual=np.asarray(item['xy']) if standing else st.locate(target,info)[0]
+                    limit=picker.STANDING_AIM_MM if standing else self.settings['target_match_radius_mm']
+                    if np.linalg.norm(actual[:2]-xy)>limit:
                         return 'hold',None,0.
                     item['pipeline_crop_id']=ident
                     return route,record_by_id[ident]['score'],0.

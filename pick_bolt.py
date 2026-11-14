@@ -148,6 +148,14 @@ JAW_SWEEP_MM, JAW_PAD_MM = 55.0, 20.0   # the opening jaws: they open across the
 PLACE_CARRY_MIN_Z = 200.0      # a place out of reach at carrying height is approached lower, never below this gripper
                                # height; every place must be reachable here
 TAPE_MAX_MM = 2.0              # blobs this flat (tape marking a spot, a cable) do not take a place; anything taller does
+# A standing bolt is aimed at by its top, seen from the scan height (from the close-up, 340 mm up, the top of an 80 mm
+# bolt is nearer than the depth camera's minimum range: it read 24 x 8 x 18 mm and the jaws closed on air beside it).
+# summit(): the highest SUMMIT_MIN_PX points within SUMMIT_RADIUS_MM, and those within SUMMIT_BAND_MM below them.
+SUMMIT_RADIUS_MM, SUMMIT_BAND_MM, SUMMIT_MIN_PX = 35.0, 6.0, 12
+STANDING_MIN_TOP_MM = 40.0     # a top this high is a standing part; lying parts here read 30 mm at most
+STANDING_AIM_MM = 25.0         # an external target is standing only if that top is this near its position
+TOP_CLEAR_MM = 25.0            # the open fingertips arrive at least this far above a standing part's top
+STANDING_BODY_CLEAR_MM = 83.0  # tallest standing part the gripper body clears with fingertips at STANDING_TIP_MM
 BOLT_LYING_MIN_H, BOLT_LYING_MAX_H = 6.0, 40.0
 BOLT_LYING_MIN_LEN, BOLT_LYING_MIN_ASPECT, BOLT_LYING_MAX_W = 25.0, 1.7, 45.0
 GRIP_MAX_SPAN_MM = 70.0        # widest thing the open jaws take with room to spare (the xArm Gripper opens about
@@ -908,6 +916,24 @@ def table_xy(info: dict, K: Intrinsics, xs, ys) -> np.ndarray:
     return (rays @ info["R"].T + info["t"])[:, :2]
 
 
+def summit(info: dict, K: Intrinsics, xy, radius_mm: float = SUMMIT_RADIUS_MM) -> Optional[Tuple[np.ndarray, float]]:
+    """Top of the tallest thing within radius_mm of world xy -> (world xy of the top, its height above the table),
+    or None if nothing rises there. The top's own 3D points give its xy: no table-plane parallax, which puts the
+    top of an 80 mm bolt 150 mm off the camera axis about 30 mm too far out."""
+    h = np.nan_to_num(info["height"], nan=0.0)
+    ys, xs = np.nonzero(info["raised"] & info["valid"])
+    if not len(ys):
+        return None
+    z = info["depth"][ys, xs]
+    W = np.stack([(xs - K.cx) / K.fx * z, (ys - K.cy) / K.fy * z, z], axis=1) @ info["R"].T + info["t"]
+    near = np.hypot(W[:, 0] - xy[0], W[:, 1] - xy[1]) <= radius_mm
+    if near.sum() < SUMMIT_MIN_PX:
+        return None
+    W, hh = W[near], h[ys, xs][near]
+    top = float(np.sort(hh)[-SUMMIT_MIN_PX])        # not the single highest pixel: a few stray ones do not set it
+    return W[hh >= top - SUMMIT_BAND_MM, :2].mean(axis=0), top
+
+
 def raised_world(info: dict, K: Intrinsics, limit: int = 20000) -> np.ndarray:
     """World points of everything a look saw standing above the table (needs info["R"], info["t"])."""
     ys, xs = np.nonzero(info["raised"] & info["valid"])
@@ -973,11 +999,14 @@ def clear_of_box(bbox, part_xy, theta: float, t_gc) -> bool:
     return all(dist_to_rect(c, bbox) >= clear for c, clear, _ in footprint(part_xy, theta, t_gc))
 
 
-def blocked_by_tall(info: dict, K: Intrinsics, o: Obj, part_xy, theta: float, t_gc) -> Optional[float]:
-    """Height of something tall standing inside that footprint (a hand, a bottle, the box wall), or None."""
+def blocked_by_tall(info: dict, K: Intrinsics, o: Optional[Obj], part_xy, theta: float, t_gc,
+                    own_radius_mm: float = 0.0) -> Optional[float]:
+    """Height of something tall standing inside that footprint (a hand, a bottle, the box wall), or None.
+    The part itself: its blob o, and anything within own_radius_mm of part_xy (a standing part's own top)."""
     h, depth, R, t0 = info["height"], info["depth"], info["R"], info["t"]
     own = np.zeros(h.shape, bool)
-    own[o.ys, o.xs] = True
+    if o is not None:
+        own[o.ys, o.xs] = True
     ys, xs = np.nonzero(np.isfinite(h) & (np.nan_to_num(h, nan=0.0) >= MAX_NEIGHBOUR_MM) & ~dilate(own, 4))
     if not len(ys):
         return None
@@ -987,7 +1016,8 @@ def blocked_by_tall(info: dict, K: Intrinsics, o: Obj, part_xy, theta: float, t_
     Wp = np.stack([(xs - K.cx) / K.fx * z, (ys - K.cy) / K.fy * z, z], axis=1) @ R.T + t0
     hh = h[ys, xs]
     for c, clear, hmin in footprint(part_xy, theta, t_gc):
-        hit = (hh >= hmin) & (np.hypot(Wp[:, 0] - c[0], Wp[:, 1] - c[1]) < clear)
+        hit = (hh >= hmin) & (np.hypot(Wp[:, 0] - c[0], Wp[:, 1] - c[1]) < clear) \
+            & (np.hypot(Wp[:, 0] - part_xy[0], Wp[:, 1] - part_xy[1]) >= own_radius_mm)
         if hit.any():
             return float(hh[hit].max())
     return None
@@ -1340,6 +1370,11 @@ async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool =
         if why:
             print(f"\nHand rule: {why}. Not moving.")
             return dict(status="hand", why=why)
+    if target_world_xy is not None and "height" in info:   # a standing part is never matched by its ROI: aim at its top
+        up = summit(info, st.K, target_world_xy)
+        if up is not None and up[1] >= STANDING_MIN_TOP_MM \
+                and np.linalg.norm(up[0] - np.asarray(target_world_xy)[:2]) <= STANDING_AIM_MM:
+            return await pick_standing(st, stop_at, info, objs, up[0], up[1])
     cands = [o for o in objs if o.kind in PICK_KINDS]
     if roi_target is not None:
         try:cands=[roi_target(info)]
@@ -1388,6 +1423,10 @@ async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool =
         print('Look only. Next step: MODE = "hover".')
         return dict(out, status="look")
     st.current = out
+    if target_world_xy is None and target.kind == "bolt-standing":
+        up = summit(info, st.K, base)
+        if up is not None and up[1] >= STANDING_MIN_TOP_MM:
+            return await pick_standing(st, stop_at, info, objs, up[0], up[1])
     # Check the surroundings before going anywhere near: the close-up pose already has the fingertips at 186 mm,
     # lower than the box rim.
     scan_plan = grasp_plan(target.length_mm, target.width_mm, target.height_mm, tip_clearance_mm=args.tip_clearance_mm)
@@ -1516,6 +1555,57 @@ async def pick_one(st: Station, stop_at: str, skip: list, force_close_up: bool =
     holding = await st.gripper.is_holding_something()
     print(f"\ngrab() returned {grabbed}; is_holding_something: {holding.is_holding_something} {holding.meta or ''}")
     # The gripper's own verdict decides: jaws that closed all the way hold nothing.
+    return dict(out, status="held" if holding.is_holding_something else "missed")
+
+
+async def pick_standing(st: Station, stop_at: str, info: dict, objs: list, top_xy, top_h: float) -> dict:
+    """A standing part, from the scan: open jaws over its top, straight down around it, close, lift. No close-up
+    (too near for depth on the top). Fingertips go to STANDING_TIP_MM, higher for parts taller than the gripper
+    body clears there, and arrive from TOP_CLEAR_MM above the top."""
+    args = st.args
+    x, y = float(top_xy[0]), float(top_xy[1])
+    theta = neutral_theta(x, y)          # a round shank: any jaw direction; this one keeps the camera outward
+    tip = STANDING_TIP_MM + max(0.0, top_h - STANDING_BODY_CLEAR_MM)
+    grasp_z = TABLE_Z_EXPECTED + tip + args.tip_offset_mm
+    hover_z = TABLE_Z_EXPECTED + max(tip + APPROACH_MM, top_h + TOP_CLEAR_MM) + args.tip_offset_mm
+    out = dict(xy=np.array([x, y]), scan_xy=np.array([x, y]), kind="bolt-standing", score=1.0, seen_at=info["seen_at"],
+               size=(15.0, 15.0, top_h), decision="box", anomaly=None, confidence=1.0, theta=theta, grasp_z=grasp_z)
+    print(f"\nStanding part: top {top_h:.0f} mm up at x={x:.1f} y={y:.1f}. Fingertips down to {tip:.0f} mm, "
+          f"arriving from {hover_z - args.tip_offset_mm:.0f} mm (theta {theta:.0f})")
+    for axis, val in (("x", x), ("y", y)):
+        lo, hi = WORKSPACE[axis]
+        if not lo <= val <= hi:
+            print(f"Target {axis}={val:.0f} is outside the workspace {lo:.0f}..{hi:.0f}. Not moving.")
+            return dict(out, status="out")
+    tall = blocked_by_tall(info, st.K, None, (x, y), theta, st.t_gc, own_radius_mm=SUMMIT_RADIUS_MM)
+    near_box = st.box is not None and not clear_of_box(st.box["bbox"], (x, y), theta, st.t_gc)
+    if tall is not None or near_box:
+        print(f"Too close to {'the box' if near_box else f'something {tall:.0f} mm tall'}. Not approaching.")
+        return dict(out, status="refused")
+    if stop_at == "look":
+        return dict(out, status="look")
+    st.current = out
+    out["first_motion_at"] = time.time()
+    out["decision"], out["anomaly"], out["confidence"] = await decide(st, out, None, info, objs)
+    if st.inspection_handler is not None and out["decision"] == "hold":
+        print("Inspection HOLD: leave target unpicked; no grasp or delivery.")
+        return dict(out, status="inspection_hold")
+    await st.open_jaws()
+    await st.move_gripper([x, y, hover_z], theta, "pre-grasp above the standing part")
+    if stop_at == "hover":
+        return dict(out, status="hover")
+    await st.move_gripper([x, y, grasp_z], theta, "descend around the standing part", linear=True, gate=not st.box)
+    await st.confirm("close gripper", gate=False)
+    grabbed = await st.gripper.grab()
+    st.jaws_open = False
+    lift_z = grasp_z + LIFT_MM
+    if st.box:
+        lift_z = max(lift_z, st.box["drop_z"])
+        while lift_z > grasp_z + LIFT_MM and not reachable([x, y, lift_z]):
+            lift_z -= 20.0
+    await st.move_gripper([x, y, lift_z], theta, "lift", linear=True)
+    holding = await st.gripper.is_holding_something()
+    print(f"\ngrab() returned {grabbed}; is_holding_something: {holding.is_holding_something} {holding.meta or ''}")
     return dict(out, status="held" if holding.is_holding_something else "missed")
 
 
@@ -2267,6 +2357,53 @@ def self_check():
     setting = [p for what, p in far.path if not what.startswith("good: camera")]      # the Fake camera sits at the gripper
     assert far.moves == [[370, 465, 75]] and all(reachable(p) for p in setting), far.path
     assert setting[0][2] < far.scan_g[2] and setting[-1].tolist() == far.scan_g.tolist(), far.path
+
+    # A standing 80 mm bolt seen from the scan, camera 440 mm straight above x=400 y=0: its top face 360 mm away.
+    # The batch target position is 15 mm off the top. pick_one aims at the top, comes down around it to
+    # STANDING_TIP_MM from TOP_CLEAR_MM above it, and never takes a close-up.
+    up_depth = np.full((480, 640), 440.0)
+    up_depth[262:276, 285:299] = 360.0
+    class Upright(Station):
+        def __init__(self):
+            self.args = argparse.Namespace(index=None, force=False, close_up="auto", jaw_axis="y",
+                                           tip_offset_mm=TIP_OFFSET_MM, tip_clearance_mm=2.0)
+            self.K, self.t_gc, self.box, self.vision, self.current, self.moves, self.gripper = K, np.zeros(3), None, None, None, [], self
+            self.inspection_handler, self.looks = None, []
+
+        async def look(self, tag, closeups=True):
+            self.looks.append(tag)
+            objs, info = detect_depth(up_depth, K)
+            info.update(R=down, t=np.array([400.0, 0.0, 440.0]), seen_at=0.0, table_z=0.0)
+            return objs, info
+
+        async def move_gripper(self, xyz, theta, what, linear=False, gate=False):
+            self.moves.append((what, [float(c) for c in xyz]))
+
+        async def open_jaws(self):
+            pass
+
+        async def confirm(self, what, gate=True):
+            pass
+
+        async def grab(self):
+            return True
+
+        async def is_holding_something(self):
+            return argparse.Namespace(is_holding_something=True, meta=None)
+    arm = Upright()
+    with open(os.devnull, "w") as quiet:
+        out_, sys.stdout = sys.stdout, quiet
+        try:
+            res = asyncio.run(pick_one(arm, "pick", [], target_world_xy=np.array([400.0 - 15.0, 0.0]), target_tolerance_mm=15.0,
+                                       roi_target=lambda info: (_ for _ in ()).throw(ValueError("Insufficient ROI foreground"))))
+        finally:
+            sys.stdout = out_
+    face = np.array([400.0 - (268.5 - 240) / 600 * 360, 0.0 - (291.5 - 320) / 600 * 360])     # world xy of the top face
+    moves = dict(arm.moves)
+    assert res["status"] == "held" and res["kind"] == "bolt-standing" and math.dist(res["xy"], face) < 3, res
+    assert arm.looks == ["scan"], arm.looks                                                       # no close-up
+    assert moves["pre-grasp above the standing part"][2] - TIP_OFFSET_MM >= 80 + TOP_CLEAR_MM - 3, moves
+    assert abs(moves["descend around the standing part"][2] - TIP_OFFSET_MM - STANDING_TIP_MM) < 1, moves
     # End to end through the detector: a 60 x 55 x 12 mm block on a flat table, camera 440 mm straight above.
     depth = np.full((480, 640), 440.0)
     depth[200:275, 280:362] = 428.0                   # 82 x 75 px at 428 mm = 58 x 53 mm
