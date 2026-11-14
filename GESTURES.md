@@ -27,7 +27,7 @@ during the gesture cannot automatically resume picking.
 
 A stop or new policy cancels a pending gesture. During a gesture it cancels the
 remaining waypoints at the next completed-waypoint checkpoint; it does not interrupt
-a moving waypoint. A new policy remains pending for later confirmation by start.
+a moving waypoint. A new policy becomes active, but picking remains stopped until start.
 Scene resets/caller shutdown also cancel remaining waypoints. Voice remains a soft
 checkpoint control, not an emergency stop.
 

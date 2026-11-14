@@ -19,7 +19,7 @@ from core.voice_control import VoiceControl, voice_runtime_settings
 from robot.external_box_pick import ExternalBoxBatch
 from robot.home_scene import HomeScene
 from robot.gestures import run_gesture
-from vlm.service import decide_wrist_objects
+from vlm.service import InspectionReset, decide_wrist_objects
 
 
 def validate_settings(settings):
@@ -165,7 +165,12 @@ async def run_continuous(config, root, *, fake=False, confirm_motion=False,
                 if voice is not None and checkpoint().reset_requested:
                     continue
                 epoch_settings = voice.inspection_settings(vlm_settings) if voice is not None else vlm_settings
-                decisions = await decide_wrist_objects(wrist, epoch_settings, root, fake=fake)
+                try:
+                    options = {'checkpoint': checkpoint} if voice is not None else {}
+                    decisions = await decide_wrist_objects(wrist, epoch_settings, root, fake=fake, **options)
+                except InspectionReset:
+                    print('Continuous: VLM batch discarded; apply current control/policy state before fresh inspection.', flush=True)
+                    continue
                 monitor = HomeMonitor(batch, inspector, settings, checkpoint, voice=voice)
                 # Also check the home view after inference, before using its decisions.
                 preflight = await monitor.sample()

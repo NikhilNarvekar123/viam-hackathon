@@ -11,15 +11,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize('text,command', [
-    ('Hello!', 'hello'), ('start', 'start'), ('Robot, please stop.', 'stop'),
-    ('dance please', 'dance'), ('New policy: Reject red parts.', 'new_policy'),
+    ('Hello robot!', 'hello'), ('robot start', 'start'), ('Robot, please stop.', 'stop'),
+    ('dance please', 'dance'), ('New policy: Reject red parts over.', 'new_policy'),
 ])
 def test_whole_utterance_parser(text, command):
     assert parse_voice_command(text)['command'] == command
 
 
 @pytest.mark.parametrize('text', [
-    '', None, 'stop', 'robot stop', 'do not start', "don't start", 'stop then start', 'please do not stop',
+    '', None, 'stop', 'do not start', "don't start", 'stop then start', 'please do not stop',
     'I started yesterday', 'starting', 'hello start', 'dance and start',
     'new policy', 'new policy: ', 'new policy ' + 'x' * 601,
     'new policy reject red\nstart', 'we need a new policy reject red',
@@ -36,8 +36,8 @@ def setup(tmp_path):
 
 
 def command(text, seq=1, heard=100.0, created=100.0, source='audio', kind=EventKind.VOICE_COMMAND):
-    # Tests describe the stop action; its spoken phrase now requires please.
-    if text == 'stop':text = 'stop please'
+    if text in ('start', 'stop', 'hello'):text = 'robot ' + text
+    if text.startswith('new policy '):text += ' over'
     payload = dict(parse_voice_command(text), sequence=seq, heard_at=heard)
     return RuntimeEvent(kind, source, created, json.dumps(payload))
 
@@ -52,7 +52,7 @@ def test_start_requires_audio_readiness_and_fresh_speech(tmp_path):
     assert not control.paused
 
 
-@pytest.mark.parametrize('text', ['stop', 'hello', 'dance', 'new policy reject red parts'])
+@pytest.mark.parametrize('text', ['stop', 'hello', 'dance'])
 def test_pause_requires_start_spoken_after_acknowledgement(tmp_path, text):
     control, clock = setup(tmp_path)
     assert control.consume([command('start')])
@@ -96,15 +96,14 @@ def test_stop_cancels_pending_or_inflight_gesture(tmp_path):
     assert control.gesture_cancel_requested and control.paused
 
 
-def test_policy_only_activates_on_later_start_and_settings_are_snapshots(tmp_path):
+def test_policy_immediately_resets_running_loop_and_settings_are_snapshots(tmp_path):
     control, clock = setup(tmp_path)
     base = yaml.safe_load((ROOT/'config/vlm_service.yaml').read_text())
     initial = control.inspection_settings(base)
-    control.consume([command('new policy reject red parts')])
-    assert control.pending_policy == 'reject red parts' and control.active_policy is None
-    assert control.inspection_settings(base)['prompt'] == base['prompt']
+    control.consume([command('start')])
     clock[0] = 101
-    control.consume([command('start', 2, heard=101, created=101)])
+    assert control.consume([command('new policy reject red parts', 2, heard=101, created=101)])
+    assert control.pending_policy is None and not control.paused
     active = control.inspection_settings(base)
     assert active['inspection_policy'] == {'version': 1, 'text': 'reject red parts'}
     assert not active['stage1_fast_pass']
@@ -116,10 +115,14 @@ def test_policy_only_activates_on_later_start_and_settings_are_snapshots(tmp_pat
     clock[0] = 102
     control.consume([command('new policy reject blue parts', 3, heard=102, created=102)])
     assert active['inspection_policy']['text'] == 'reject red parts'
-    assert control.active_policy == 'reject red parts'
+    assert control.active_policy == 'reject blue parts' and not control.paused
+    clock[0] = 103
+    control.consume([command('stop', 4, heard=103, created=103),
+                     command('new policy reject green parts', 5, heard=103, created=103)])
+    assert control.active_policy == 'reject green parts' and control.paused
     rows = [json.loads(line) for line in control.log_path.read_text().splitlines()]
-    assert [r['event'] for r in rows].count('policy_pending') == 2
-    assert [r['event'] for r in rows].count('policy_activated') == 1
+    assert [r['event'] for r in rows].count('policy_pending') == 0
+    assert [r['event'] for r in rows].count('policy_activated') == 3
 
 
 def test_stale_start_policy_gesture_ignored_but_stop_never_expires(tmp_path):
@@ -179,7 +182,7 @@ def test_confirmed_policy_reaches_qwen_for_normal_and_anomalous_parts(tmp_path):
     control.consume([command('start', 2, heard=101, created=101)])
     effective = control.inspection_settings(yaml.safe_load((ROOT/'config/vlm_service.yaml').read_text()))
     Image.new('RGB', (40, 40)).save(tmp_path/'frame.png')
-    for i in (1, 2):Image.new('RGB', (20, 20)).save(tmp_path/f'object_{i:03d}.png')
+    for i in (1, 2):Image.new('RGB', (20, 20), 'blue').save(tmp_path/f'object_{i:03d}.png')
     wrist = dict(output_dir=str(tmp_path), objects=[
         dict(id=1, score=.1, threshold=.6, classification='normal', bbox_xyxy=[10, 10, 30, 30]),
         dict(id=2, score=.9, threshold=.6, classification='anomalous', bbox_xyxy=[10, 10, 30, 30]),

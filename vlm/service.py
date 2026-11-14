@@ -19,11 +19,19 @@ def route_decision(anomaly, vlm, destinations, policy='disagreement_hold'):
     return dict(final_action=action,destination=destinations[action],routing_reason=reason)
 
 
-async def decide_wrist_objects(wrist, settings, root, fake=False):
+class InspectionReset(RuntimeError):
+    """The entire inspection is obsolete; partial verdicts must never reach picking."""
+
+
+async def decide_wrist_objects(wrist, settings, root, fake=False, checkpoint=None):
     folder=Path(wrist['output_dir'])
     records=[];machine=None;service=None;status=None
     # Blue tape decides alone, except while a voice-confirmed inspection policy is active: that goes to the VLM.
-    color_only=bool(settings.get('color_only')) and not settings.get('inspection_policy')
+    custom_policy=bool((settings.get('inspection_policy') or {}).get('text'))
+    color_only=bool(settings.get('color_only')) and not custom_policy
+    def check_reset():
+        if checkpoint is not None and checkpoint().reset_requested:
+            raise InspectionReset('Discard inspection at VLM request boundary')
     error=None if settings.get('enabled',True) else 'VLM disabled by configuration; manual review required'
     destinations=settings['action_to_destination']
     if set(destinations)!={'accept','reject','hold'}:
@@ -32,6 +40,7 @@ async def decide_wrist_objects(wrist, settings, root, fake=False):
     annotated=frame.copy()
     draw=ImageDraw.Draw(annotated)
     try:
+        check_reset()
         if (any(not stage1_pass(o,settings) for o in wrist['objects']) and not fake and error is None
                 and not color_only):
             try:
@@ -46,11 +55,12 @@ async def decide_wrist_objects(wrist, settings, root, fake=False):
                 error=f'{type(exc).__name__}: {exc}'
                 print(f'VLM unavailable: {error}. Escalated objects route to HOLD; Stage 1 passes are unchanged.')
         for anomaly in wrist['objects']:
+            check_reset()
             ident=anomaly['id']
             passed=stage1_pass(anomaly,settings)
             color=settings.get('color_check') or {}
             colored=None
-            if color.get('enabled') and (folder/f'object_{ident:03d}.png').exists():
+            if not custom_policy and color.get('enabled') and (folder/f'object_{ident:03d}.png').exists():
                 with Image.open(folder/f'object_{ident:03d}.png') as saved: colored=colored_pixels(saved,float(color['min_saturation']),color.get('hue_range'))
             color_reject=colored is not None and colored>=int(color['min_pixels'])
             if color_reject:
@@ -78,6 +88,9 @@ async def decide_wrist_objects(wrist, settings, root, fake=False):
                                            settings.get('image_size_px'))
                 combined.save(folder/f'object_{ident:03d}_vlm_input.png')
                 vlm=await ask_crop(service,combined,question,settings)
+            # Never cancel a GPU request and immediately submit another: wait for
+            # its result, then discard it before issuing any remaining requests.
+            check_reset()
             routing=(dict(final_action='reject',destination=destinations['reject'],routing_reason='Color check')
                      if color_reject else
                      dict(final_action='accept',destination=destinations['accept'],
@@ -107,5 +120,10 @@ async def decide_wrist_objects(wrist, settings, root, fake=False):
             annotated.save(folder/'decisions.png')
         print(f"VLM decisions: {folder/'vlm_results.json'} (no actions executed)")
         return records
+    except InspectionReset:
+        (folder/'inspection_reset.json').write_text(json.dumps(dict(
+            status='discarded', reason='runtime_reset', inspection_policy=settings.get('inspection_policy'),
+            completed_crop_ids=[r['id'] for r in records], actions_executed=False), indent=2)+'\n')
+        raise
     finally:
         if machine is not None: await disconnect(machine)

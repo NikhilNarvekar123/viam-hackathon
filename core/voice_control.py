@@ -1,6 +1,6 @@
 """Checkpoint-only voice control. No hardware, model calls, or arbitrary dispatch.
 
-A start must be spoken AFTER a stop/policy/gesture has been acknowledged. Buffered
+A start must be spoken AFTER a stop/gesture has been acknowledged. Buffered
 starts cannot cancel it. A voice stop is a soft pause, never an emergency stop.
 """
 from copy import deepcopy
@@ -33,7 +33,7 @@ def parse_voice_command(raw_text):
     )
     if policy:
         rule = policy.group(1).strip(' \t:.,-')
-        if rule and len(rule) <= MAX_POLICY_CHARS and not any(ord(c) < 32 for c in rule):
+        if rule and any(c.isalpha() for c in rule) and len(rule) <= MAX_POLICY_CHARS and not any(ord(c) < 32 for c in rule):
             return dict(command='new_policy', policy=rule, raw_text=text)
         return None
     norm = normalize_transcript(text)
@@ -58,8 +58,8 @@ def voice_runtime_settings(config):
 class VoiceControl:
     """One controller-owned state machine; consume all events through its checkpoint.
 
-    Policies live only in this process. Confirmation changes the next inspection
-    snapshot, never an in-flight request or an organizer-managed service config.
+    Policies live only in this process. New policies reset a running inspection at
+    its next safe boundary, never an in-flight request or organizer service config.
     """
     def __init__(self, settings, root, *, clock=time.monotonic):
         self.clock = clock
@@ -69,6 +69,7 @@ class VoiceControl:
         self.ready = False
         self.ready_after = math.inf
         self.paused = True
+        self.restart_blocked = True  # Initial wait, explicit stop, and gestures require a fresh start.
         self.pending_policy = None
         self.pending_gesture = None
         self.gesture_in_progress = False
@@ -142,12 +143,8 @@ class VoiceControl:
                         or self.pending_gesture is not None or self.gesture_in_progress):
                     self.log('ignored', command=command, reason='Say start AFTER ready/stop/policy acknowledgement or gesture completion')
                     continue
-                if self.pending_policy is not None:
-                    self.active_policy = self.pending_policy
-                    self.pending_policy = None
-                    self.policy_version += 1
-                    self.log('policy_activated', policy=self.active_policy, stage1_fast_pass=False)
                 self.paused = False
+                self.restart_blocked = False
                 reset = True
                 self.log('start', reason='Discard all pending targets/verdicts; fresh inspection')
             else:
@@ -158,13 +155,20 @@ class VoiceControl:
                     self.pending_gesture = None
                     self.gesture_cancel_requested = self.gesture_in_progress
                 if command == 'new_policy':
-                    self.pending_policy = parsed['policy']
-                    self.log('policy_pending', policy=self.pending_policy, reason='Say start to confirm and inspect afresh')
+                    self.pending_policy = None
+                    self.active_policy = parsed['policy']
+                    self.policy_version += 1
+                    self.paused = self.restart_blocked or not self.ready
+                    self.log('policy_activated', policy=self.active_policy, stage1_fast_pass=False,
+                             automatic_restart=not self.paused,
+                             reason='Discard old batch; rescan with this policy unless explicitly stopped')
                 elif command in ('hello', 'dance'):
+                    self.restart_blocked = True
                     self.pending_gesture = command
                     self.log('gesture_requested', gesture=command,
                              reason='Replay taught poses at empty-gripper safe boundary; stay stopped afterward')
                 else:
+                    self.restart_blocked = True
                     self.log('stopped', reason='Safe checkpoint reached; remain stopped until start')
         return reset
 
@@ -183,6 +187,7 @@ class VoiceControl:
         self.gesture_in_progress = False
         self.gesture_cancel_requested = False
         self.paused = True
+        self.restart_blocked = True
         # Commands spoken during the gesture cannot resume picking afterward.
         self.resume_after = self.clock()
         self.log('gesture_' + status, gesture=name, reason='Remain stopped; say a fresh start to inspect')

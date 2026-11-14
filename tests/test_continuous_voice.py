@@ -29,7 +29,8 @@ def setup(tmp_path):
     def say(text):
         nonlocal sequence
         sequence += 1
-        if text == 'stop':text = 'stop please'
+        if text in ('start', 'stop', 'hello'):text = 'robot ' + text
+        if text.startswith('new policy '):text += ' over'
         return runtime.publish('voice_command', 'audio', json.dumps(dict(
             parse_voice_command(text), sequence=sequence, heard_at=time.monotonic())))
     return config, settings, runtime, say
@@ -82,7 +83,6 @@ def test_initially_stopped_and_gestures_never_start_picking(tmp_path):
 
 @pytest.mark.parametrize('utterance,ack', [
     ('stop', 'stopped'), ('hello', 'gesture_completed'), ('dance', 'gesture_completed'),
-    ('new policy reject red parts', 'policy_pending'),
 ])
 def test_command_during_delivery_finishes_then_stays_stopped_until_fresh_start(tmp_path, utterance, ack):
     config, settings, runtime, say = setup(tmp_path)
@@ -134,11 +134,12 @@ def test_command_during_delivery_finishes_then_stays_stopped_until_fresh_start(t
         assert snapshots[0][1]['inspection_policy']['version'] == 0
 
 
-def test_start_while_running_always_discards_pending_targets(tmp_path):
+@pytest.mark.parametrize('reset_utterance', ['start', 'new policy reject red parts'])
+def test_running_reset_discards_pending_targets_after_delivery(tmp_path, reset_utterance):
     config, settings, runtime, say = setup(tmp_path)
     stop = asyncio.Event();inspections = []
     async def deliver(st, result, skip):
-        say('start')
+        say(reset_utterance)
         return await execute_result(st, result, skip)
     async def inspect(wrist, *args, **kwargs):
         inspections.append(wrist['output_dir'])

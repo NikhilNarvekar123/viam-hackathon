@@ -13,8 +13,9 @@ The existing default batch mode remains unchanged.
   informational. Optional `--voice` handles typed `audio_ready` / `voice_command`
   events, starts stopped, and requires start to resume/reset. Stop waits for the
   completed delivery/return. This is NOT an immediate or safety STOP.
-- New policies are staged/logged, then a later start confirms them for Qwen and
-  fresh inspection. Custom policies disable fast-pass. Hello/dance replay configured
+- New policies activate/log and automatically reset a running loop for fresh
+  inspection at the next delivery/VLM-request boundary. Explicit stop remains latched.
+  Custom policies disable fast-pass and the default color override. Hello/dance replay configured
   taught poses after delivery and empty-gripper/idle checks, then remain stopped.
   See `VOICE_CONTROL.md` and `GESTURES.md` for semantics, tests, and constraints.
 - Camera/audio settings must be verified before deployment. Hooks remain disabled

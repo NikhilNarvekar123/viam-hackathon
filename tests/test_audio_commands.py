@@ -29,7 +29,7 @@ def test_listener_publishes_readiness_and_typed_command_then_closes_connection(t
         yield SimpleNamespace(audio=SimpleNamespace(audio_data=np.full(32000, 1000, np.int16).tobytes()))
     mic = SimpleNamespace(get_properties=AsyncMock(return_value=SimpleNamespace(sample_rate_hz=16000, num_channels=1)),
                           get_audio=AsyncMock(side_effect=lambda **kwargs: chunks()))
-    pipe = SimpleNamespace(generate=Mock(return_value=SimpleNamespace(texts=['Start.'])))
+    pipe = SimpleNamespace(generate=Mock(return_value=SimpleNamespace(texts=['Robot start.'])))
     module = SimpleNamespace(AudioIn=SimpleNamespace(from_robot=Mock(return_value=mic)))
     with patch.dict(sys.modules, {'viam.components.audio_in': module}), \
          patch('robot.viam_hw.load_credentials', return_value={}), \
