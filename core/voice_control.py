@@ -33,8 +33,10 @@ def parse_voice_command(raw_text):
         if rule and len(rule) <= MAX_POLICY_CHARS and not any(ord(c) < 32 for c in rule):
             return dict(command='new_policy', policy=rule, raw_text=text)
         return None
-    match = re.fullmatch(r'(?:robot )?(?:please )?(hello|start|stop|dance)(?: please)?',
-                         normalize_transcript(text))
+    norm = normalize_transcript(text)
+    if re.fullmatch(r'(?:robot )?(?:please stop|stop please)', norm):
+        return dict(command='stop', raw_text=text)
+    match = re.fullmatch(r'(?:robot )?(?:please )?(hello|start|dance)(?: please)?', norm)
     return dict(command=match.group(1), raw_text=text) if match else None
 
 
