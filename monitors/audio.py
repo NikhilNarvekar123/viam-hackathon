@@ -40,9 +40,10 @@ def _prepare_16k_mono(raw_bytes: bytes, sample_rate: int, num_channels: int) -> 
 def _resolve_model_dir(settings: dict, root: Path) -> Path:
     if "model_path" in settings:
         return (root / settings["model_path"]).resolve()
-    base_dir = (root / "models/whisper-base-ov").resolve()
-    if base_dir.exists():
-        return base_dir
+    for candidate in ("models/whisper-small-ov", "models/whisper-base-ov", "models/whisper-tiny-ov"):
+        cand_dir = (root / candidate).resolve()
+        if cand_dir.exists():
+            return cand_dir
     return (root / "models/whisper-tiny-ov").resolve()
 
 
